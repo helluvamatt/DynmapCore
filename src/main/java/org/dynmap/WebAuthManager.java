@@ -16,8 +16,6 @@ import java.util.Set;
 
 import org.dynmap.common.DynmapCommandSender;
 import org.dynmap.common.DynmapPlayer;
-import org.dynmap.kzedmap.KzedMap;
-import org.dynmap.kzedmap.MapTileRenderer;
 import org.dynmap.servlet.LoginServlet;
 
 public class WebAuthManager {
@@ -166,6 +164,18 @@ public class WebAuthManager {
         pwdhash_by_userid.put(uid, hash);
         return save();
     }
+    public static final boolean checkUserName(String name) {
+        int nlen = name.length();
+        if ((nlen > 0) && (nlen <= 16)) {
+            for (int i = 0; i < nlen; i++) {
+                if ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".indexOf(name.charAt(i)) < 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
     public boolean processWebRegisterCommand(DynmapCore core, DynmapCommandSender sender, DynmapPlayer player, String[] args) {
         String uid = null;
         boolean other = false;
@@ -183,6 +193,10 @@ public class WebAuthManager {
         }
         else {
             uid = player.getName();
+        }
+        if (checkUserName(uid) == false) {
+            sender.sendMessage("Invalid user ID");
+            return true;
         }
         String regkey = String.format("%04d-%04d", rnd.nextInt(10000), rnd.nextInt(10000));
         pending_registrations.put(uid.toLowerCase(), regkey.toLowerCase());
@@ -202,9 +216,11 @@ public class WebAuthManager {
         
         return true;
     }
-    String getLoginPHP() {
+    String getLoginPHP(boolean wrap) {
         StringBuilder sb = new StringBuilder();
-        sb.append("<?php\n");
+        if (wrap) {
+            sb.append("<?php\n");
+        }
         sb.append("$pwdsalt = '").append(hashsalt).append("';\n");
         /* Create password hash */
         sb.append("$pwdhash = array(\n");
@@ -218,12 +234,13 @@ public class WebAuthManager {
             sb.append("  \'").append(esc(uid)).append("\' => \'").append(esc(pending_registrations.get(uid))).append("\',\n");
         }
         sb.append(");\n");
-        sb.append("?>\n");
-        
+        if (wrap) {
+            sb.append("?>\n");
+        }
         return sb.toString();
     }
     
-    private static String esc(String s) {
+    public static String esc(String s) {
         StringBuilder sb = new StringBuilder();
         for(int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
@@ -237,10 +254,11 @@ public class WebAuthManager {
         return sb.toString();
     }
     
-    String getAccessPHP() {
+    String getAccessPHP(boolean wrap) {
         StringBuilder sb = new StringBuilder();
-        sb.append("<?php\n");
-        
+        if (wrap) {
+            sb.append("<?php\n");
+        }
         ArrayList<String> mid = new ArrayList<String>();
         /* Create world access list */
         sb.append("$worldaccess = array(\n");
@@ -256,15 +274,7 @@ public class WebAuthManager {
                 sb.append("\',\n");
             }
             for(MapType mt : w.maps) {
-                if(mt instanceof KzedMap) {
-                    KzedMap kmt = (KzedMap)mt;
-                    for(MapTileRenderer tr : kmt.renderers) {
-                        if(tr.isProtected()) {
-                            mid.add(w.getName() + "." + tr.getPrefix());
-                        }
-                    }
-                }
-                else if(mt.isProtected()) {
+                if(mt.isProtected()) {
                     mid.add(w.getName() + "." + mt.getPrefix());
                 }
             }
@@ -311,40 +321,27 @@ public class WebAuthManager {
         }
         sb.append(");\n");
 
-        addPaths(sb, core);
+        core.getDefaultMapStorage().addPaths(sb, core);
 
-        sb.append("?>\n");
+        if (wrap) {
+            sb.append("?>\n");
+        }
         
         return sb.toString();
     }
     
-    private static void addPaths(StringBuilder sb, DynmapCore core) {
-        String p = core.getTilesFolder().getAbsolutePath();
-        if(!p.endsWith("/"))
-            p += "/";
-        sb.append("$tilespath = \'");
-        sb.append(esc(p));
-        sb.append("\';\n");
-        sb.append("$markerspath = \'");
-        sb.append(esc(p));
-        sb.append("\';\n");
-
-        File wpath = core.getFile(core.getWebPath());
-        p = wpath.getAbsolutePath();
-        if(!p.endsWith("/"))
-            p += "/";
-        sb.append("$webpath = \'");
-        sb.append(esc(p));
-        sb.append("\';\n");
-    }
     
-    static String getDisabledAccessPHP(DynmapCore core) {
+    static String getDisabledAccessPHP(DynmapCore core, boolean wrap) {
         StringBuilder sb = new StringBuilder();
-        sb.append("<?php\n");
-
-        addPaths(sb, core);
+        if (wrap) {
+            sb.append("<?php\n");
+        }
         
-        sb.append("?>\n");
+        core.getDefaultMapStorage().addPaths(sb, core);
+        
+        if (wrap) {
+            sb.append("?>\n");
+        }
         
         return sb.toString();
     }

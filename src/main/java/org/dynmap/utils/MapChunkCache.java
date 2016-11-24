@@ -2,12 +2,27 @@ package org.dynmap.utils;
 
 import org.dynmap.DynmapWorld;
 
-public interface MapChunkCache {
+public abstract class MapChunkCache {
     public enum HiddenChunkStyle {
         FILL_AIR,
         FILL_STONE_PLAIN,
         FILL_OCEAN
     };
+    public enum ChunkStats {
+        CACHED_SNAPSHOT_HIT("Cached"),          // Stats for cached snapshot hits
+        LOADED_CHUNKS("Already Loaded"),        // Stats for snapshotting already loaded chunks
+        UNLOADED_CHUNKS("Load Required"),     // Stats for chunks requiring load/unload
+        UNGENERATED_CHUNKS("Not Generated");    // Stats for chunks requested that did not exist
+        private final String label;
+        ChunkStats(String lbl) {
+            label = lbl;
+        }
+        public String getLabel() { return label; }
+    };
+    
+    private long timeTotal[] = new long[ChunkStats.values().length];
+    private int cntTotal[] = new int[ChunkStats.values().length];
+
     /**
      * Set chunk data type needed
      * @param blockdata - need block type and data for chunk
@@ -16,68 +31,87 @@ public interface MapChunkCache {
      * @param rawbiome - need raw biome temp/rain data
      * @return true if all data types can be retrieved, false if not
      */
-    boolean setChunkDataTypes(boolean blockdata, boolean biome, boolean highestblocky, boolean rawbiome);
+    public abstract boolean setChunkDataTypes(boolean blockdata, boolean biome, boolean highestblocky, boolean rawbiome);
     /**
      * Load chunks into cache
      * @param maxToLoad - maximum number to load at once
      * @return number loaded
      */
-    int loadChunks(int maxToLoad);
+    public abstract int loadChunks(int maxToLoad);
     /**
      * Test if done loading
+     * @return true if load completed
      */
-    boolean isDoneLoading();
+    public abstract boolean isDoneLoading();
     /**
      * Test if all empty blocks
+     * @return true if empty
      */
-    boolean isEmpty();
+    public abstract boolean isEmpty();
     /**
      * Unload chunks
      */
-    void unloadChunks();
+    public abstract void unloadChunks();
     /**
      * Test if section (16 x 16 x 16) at given coord is empty (all air)
+     * @param sx - section X
+     * @param sy - section Y
+     * @param sz - section Z
+     * @return true if empty
      */
-    boolean isEmptySection(int sx, int sy, int sz);
+    public abstract boolean isEmptySection(int sx, int sy, int sz);
     /**
      * Get cache iterator
+     * @param x - x coord
+     * @param y - y coord
+     * @param z - z coord
+     * @return iterator
      */
-    public MapIterator getIterator(int x, int y, int z);
+    public abstract MapIterator getIterator(int x, int y, int z);
     /**
      * Set hidden chunk style (default is FILL_AIR)
+     * @param style - hide style
      */
-    public void setHiddenFillStyle(HiddenChunkStyle style);
+    public abstract void setHiddenFillStyle(HiddenChunkStyle style);
     /**
      * Add visible area limit - can be called more than once 
      * Needs to be set before chunks are loaded
      * Coordinates are block coordinates
+     * @param limit - limits of visible area
      */
-    public void setVisibleRange(VisibilityLimit limit);
+    public abstract void setVisibleRange(VisibilityLimit limit);
     /**
      * Add hidden area limit - can be called more than once 
      * Needs to be set before chunks are loaded
      * Coordinates are block coordinates
+     * @param limit - limits of hidden area
      */
-    public void setHiddenRange(VisibilityLimit limit);
+    public abstract void setHiddenRange(VisibilityLimit limit);
     /**
      * Get world
+     * @return world
      */
-    public DynmapWorld getWorld();
+    public abstract DynmapWorld getWorld();
     /**
-     * Get total chunks loaded
-     * @return
+     * Get number of chunks with given disposition
+     * @param type - chunk load type
+     * @return total count
      */
-    public int getChunksLoaded();
+    public int getChunksLoaded(ChunkStats type) {
+        return cntTotal[type.ordinal()];
+    }
     /**
-     * Get total chunk loads attempted
-     * @return
+     * Get total run time processing chunks with given disposition
+     * @param type - chunk load type
+     * @return total in nanoseconds
      */
-    public int getChunkLoadsAttempted();
-    /**
-     * Get total run time processing chunks
-     * @return
-     */
-    public long getTotalRuntimeNanos();
+    public long getTotalRuntimeNanos(ChunkStats type) {
+        return timeTotal[type.ordinal()];
+    }
     
-    public long getExceptionCount();
+    protected void endChunkLoad(long startTime, ChunkStats type) {
+        int ord = type.ordinal();
+        timeTotal[ord] += System.nanoTime() - startTime;
+        cntTotal[ord]++;
+    }
 }

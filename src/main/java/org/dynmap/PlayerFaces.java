@@ -1,7 +1,6 @@
 package org.dynmap;
 
 import java.awt.image.BufferedImage;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
@@ -13,21 +12,50 @@ import org.dynmap.common.DynmapListenerManager.EventType;
 import org.dynmap.common.DynmapListenerManager.PlayerEventListener;
 import org.dynmap.common.DynmapPlayer;
 import org.dynmap.debug.Debug;
+import org.dynmap.storage.MapStorage;
+import org.dynmap.utils.BufferOutputStream;
 import org.dynmap.utils.DynmapBufferedImage;
-import org.dynmap.utils.FileLockManager;
+import org.dynmap.utils.ImageIOManager;
 
 /**
  * Listen for player logins, and process player faces by fetching skins *
  */
 public class PlayerFaces {
-    private File facesdir;
-    private File faces8x8dir;
-    private File faces16x16dir;
-    private File faces32x32dir;
-    private File body32x32dir;
     private boolean fetchskins;
     private boolean refreshskins;
     private String skinurl;
+    public MapStorage storage;
+    
+    public enum FaceType {
+        FACE_8X8("8x8", 0),
+        FACE_16X16("16x16", 1),
+        FACE_32X32("32x32", 2),
+        BODY_32X32("body", 3);
+        
+        public final String id;
+        public final int typeID;
+        
+        FaceType(String id, int typeid) {
+            this.id = id;
+            this.typeID = typeid;
+        }
+        public static FaceType byID(String i_d) {
+            for (FaceType ft : values()) {
+                if (ft.id.equals(i_d)) {
+                    return ft;
+                }
+            }
+            return null;
+        }
+        public static FaceType byTypeID(int tid) {
+            for (FaceType ft : values()) {
+                if (ft.typeID == tid) {
+                    return ft;
+                }
+            }
+            return null;
+        }
+    }
     
     private class LoadPlayerImages implements Runnable {
         public String playername;
@@ -35,14 +63,10 @@ public class PlayerFaces {
             this.playername = playername;
         }
         public void run() {
-            File img_8x8 = new File(faces8x8dir, playername + ".png");
-            File img_16x16 = new File(faces16x16dir, playername + ".png");
-            File img_32x32 = new File(faces32x32dir, playername + ".png");
-            File body = new File(body32x32dir, playername + ".png");
-            boolean has_8x8 = img_8x8.exists();
-            boolean has_16x16 = img_16x16.exists();
-            boolean has_32x32 = img_32x32.exists();
-            boolean has_body = body.exists();
+            boolean has_8x8 = storage.hasPlayerFaceImage(playername, FaceType.FACE_8X8);
+            boolean has_16x16 = storage.hasPlayerFaceImage(playername, FaceType.FACE_16X16);
+            boolean has_32x32 = storage.hasPlayerFaceImage(playername, FaceType.FACE_32X32);
+            boolean has_body = storage.hasPlayerFaceImage(playername, FaceType.BODY_32X32);
             boolean missing_any = !(has_8x8 && has_16x16 && has_32x32 && has_body);
             
             BufferedImage img = null;
@@ -97,13 +121,10 @@ public class PlayerFaces {
             }
             /* Write 8x8 file */
             if(refreshskins || (!has_8x8)) {
-                FileLockManager.getWriteLock(img_8x8);
-                try {
-                    FileLockManager.imageIOWrite(face8x8.buf_img, ImageFormat.FORMAT_PNG, img_8x8);
-                } catch (IOException iox) {
-                    Log.severe("Cannot write player icon " + img_8x8.getPath());
+                BufferOutputStream bos = ImageIOManager.imageIOEncode(face8x8.buf_img, ImageFormat.FORMAT_PNG);
+                if (bos != null) {
+                    storage.setPlayerFaceImage(playername, FaceType.FACE_8X8, bos);
                 }
-                FileLockManager.releaseWriteLock(img_8x8);
             }
             /* Write 16x16 file */
             if(refreshskins || (!has_16x16)) {
@@ -114,13 +135,10 @@ public class PlayerFaces {
                         face16x16.argb_buf[i*16+j] = face8x8.argb_buf[(i/2)*8 + (j/2)];
                     }
                 }
-                FileLockManager.getWriteLock(img_16x16);
-                try {
-                    FileLockManager.imageIOWrite(face16x16.buf_img, ImageFormat.FORMAT_PNG, img_16x16);
-                } catch (IOException iox) {
-                    Log.severe("Cannot write player icon " + img_16x16.getPath());
+                BufferOutputStream bos = ImageIOManager.imageIOEncode(face16x16.buf_img, ImageFormat.FORMAT_PNG);
+                if (bos != null) {
+                    storage.setPlayerFaceImage(playername, FaceType.FACE_16X16, bos);
                 }
-                FileLockManager.releaseWriteLock(img_16x16);
                 DynmapBufferedImage.freeBufferedImage(face16x16);
             }
 
@@ -133,13 +151,10 @@ public class PlayerFaces {
                         face32x32.argb_buf[i*32+j] = face8x8.argb_buf[(i/4)*8 + (j/4)];
                     }
                 }
-                FileLockManager.getWriteLock(img_32x32);
-                try {
-                    FileLockManager.imageIOWrite(face32x32.buf_img, ImageFormat.FORMAT_PNG, img_32x32);
-                } catch (IOException iox) {
-                    Log.severe("Cannot write player icon " + img_32x32.getPath());
+                BufferOutputStream bos = ImageIOManager.imageIOEncode(face32x32.buf_img, ImageFormat.FORMAT_PNG);
+                if (bos != null) {
+                    storage.setPlayerFaceImage(playername, FaceType.FACE_32X32, bos);
                 }
-                FileLockManager.releaseWriteLock(img_32x32);
                 DynmapBufferedImage.freeBufferedImage(face32x32);
             }
 
@@ -161,13 +176,11 @@ public class PlayerFaces {
                 /* Copy arms at 8,8 to 12,20 and 20,8 to 24,20 */
                 img.getRGB(44, 20, 4, 12, body32x32.argb_buf, 8*32+8, 32); /* Read right leg from image */
                 img.getRGB(44, 20, 4, 12, body32x32.argb_buf, 8*32+20, 32); /* Read left leg from image */
-                FileLockManager.getWriteLock(body);
-                try {
-                    FileLockManager.imageIOWrite(body32x32.buf_img, ImageFormat.FORMAT_PNG, body);
-                } catch (IOException iox) {
-                    Log.severe("Cannot write player icon " + body.getPath());
+                
+                BufferOutputStream bos = ImageIOManager.imageIOEncode(body32x32.buf_img, ImageFormat.FORMAT_PNG);
+                if (bos != null) {
+                    storage.setPlayerFaceImage(playername, FaceType.BODY_32X32, bos);
                 }
-                FileLockManager.releaseWriteLock(body);
                 DynmapBufferedImage.freeBufferedImage(body32x32);
             }
 
@@ -179,8 +192,10 @@ public class PlayerFaces {
     public PlayerFaces(DynmapCore core) {
         fetchskins = core.configuration.getBoolean("fetchskins", true);    /* Control whether to fetch skins */ 
         refreshskins = core.configuration.getBoolean("refreshskins", true);    /* Control whether to update existing fetched skins or faces */ 
-        skinurl = core.configuration.getString("skin-url", "http://s3.amazonaws.com/MinecraftSkins/%player%.png");
-        
+        skinurl = core.configuration.getString("skin-url", "http://skins.minecraft.net/MinecraftSkins/%player%.png");
+        if (skinurl.equals("http://s3.amazonaws.com/MinecraftSkins/%player%.png")) {     // Migrate from legacy URL
+            skinurl = "http://skins.minecraft.net/MinecraftSkins/%player%.png";
+        }
         core.listenerManager.addListener(EventType.PLAYER_JOIN, new PlayerEventListener() {
             @Override
             public void playerEvent(DynmapPlayer p) {
@@ -191,16 +206,6 @@ public class PlayerFaces {
                     job.run();
             }
         });
-        facesdir = new File(core.getTilesFolder(), "faces");
-        
-        facesdir.mkdirs();  /* Make sure directory exists */
-        faces8x8dir = new File(facesdir, "8x8");
-        faces8x8dir.mkdirs();
-        faces16x16dir = new File(facesdir, "16x16");
-        faces16x16dir.mkdirs();
-        faces32x32dir = new File(facesdir, "32x32");
-        faces32x32dir.mkdirs();
-        body32x32dir = new File(facesdir, "body");
-        body32x32dir.mkdirs();
+        storage = core.getDefaultMapStorage();
     }
 }

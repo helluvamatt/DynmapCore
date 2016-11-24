@@ -1,11 +1,18 @@
 package org.dynmap.hdmap;
 
 import static org.dynmap.JSONUtils.s;
+
+import java.io.IOException;
+
 import org.dynmap.Color;
 import org.dynmap.ColorScheme;
 import org.dynmap.ConfigurationNode;
 import org.dynmap.DynmapCore;
+import org.dynmap.MapManager;
 import org.dynmap.common.BiomeMap;
+import org.dynmap.common.DynmapCommandSender;
+import org.dynmap.exporter.OBJExport;
+import org.dynmap.utils.BlockStep;
 import org.dynmap.utils.DynLongHashMap;
 import org.dynmap.utils.MapChunkCache;
 import org.dynmap.utils.MapIterator;
@@ -82,8 +89,9 @@ public class DefaultHDShader implements HDShader {
         private Color tmpcolor[];
         private int pixelodd;
         private HDLighting lighting;
+        final int[] lightingTable;
         
-        private OurShaderState(MapIterator mapiter, HDMap map) {
+        private OurShaderState(MapIterator mapiter, HDMap map, MapChunkCache cache) {
             this.mapiter = mapiter;
             this.map = map;
             this.lighting = map.getLighting();
@@ -94,6 +102,12 @@ public class DefaultHDShader implements HDShader {
             else {
                 color = new Color[] { new Color() };
                 tmpcolor = new Color[] { new Color() };
+            }
+            if (MapManager.mapman.useBrightnessTable()) {
+                lightingTable = cache.getWorld().getBrightnessTable();
+            }
+            else {
+                lightingTable = null;
             }
         }
         /**
@@ -223,11 +237,15 @@ public class DefaultHDShader implements HDShader {
         public DynLongHashMap getCTMTextureCache() {
             return null;
         }
+        @Override
+        public int[] getLightingTable() {
+            return lightingTable;
+        }
     }
 
     private class OurBiomeShaderState extends OurShaderState {
-        private OurBiomeShaderState(MapIterator mapiter, HDMap map) {
-            super(mapiter, map);
+        private OurBiomeShaderState(MapIterator mapiter, HDMap map, MapChunkCache cache) {
+            super(mapiter, map, cache);
         }
         protected Color[] getBlockColors(int blocktype, int blockdata) {
             BiomeMap bio = mapiter.getBiome();
@@ -238,8 +256,8 @@ public class DefaultHDShader implements HDShader {
     }
     
     private class OurBiomeRainfallShaderState extends OurShaderState {
-        private OurBiomeRainfallShaderState(MapIterator mapiter, HDMap map) {
-            super(mapiter, map);
+        private OurBiomeRainfallShaderState(MapIterator mapiter, HDMap map, MapChunkCache cache) {
+            super(mapiter, map, cache);
         }
         protected Color[] getBlockColors(int blocktype, int blockdata) {
             return colorScheme.getRainColor(mapiter.getBiome().getRainfall());
@@ -247,8 +265,8 @@ public class DefaultHDShader implements HDShader {
     }
 
     private class OurBiomeTempShaderState extends OurShaderState {
-        private OurBiomeTempShaderState(MapIterator mapiter, HDMap map) {
-            super(mapiter, map);
+        private OurBiomeTempShaderState(MapIterator mapiter, HDMap map, MapChunkCache cache) {
+            super(mapiter, map, cache);
         }
         protected Color[] getBlockColors(int blocktype, int blockdata) {
             return colorScheme.getTempColor(mapiter.getBiome().getTemperature());
@@ -266,13 +284,13 @@ public class DefaultHDShader implements HDShader {
     public HDShaderState getStateInstance(HDMap map, MapChunkCache cache, MapIterator mapiter, int scale) {
         switch(biomecolored) {
             case NONE:
-                return new OurShaderState(mapiter, map);
+                return new OurShaderState(mapiter, map, cache);
             case BIOME:
-                return new OurBiomeShaderState(mapiter, map);
+                return new OurBiomeShaderState(mapiter, map, cache);
             case RAINFALL:
-                return new OurBiomeRainfallShaderState(mapiter, map);
+                return new OurBiomeRainfallShaderState(mapiter, map, cache);
             case TEMPERATURE:
-                return new OurBiomeTempShaderState(mapiter, map);
+                return new OurBiomeTempShaderState(mapiter, map, cache);
         }
         return null;
     }
@@ -280,5 +298,14 @@ public class DefaultHDShader implements HDShader {
     /* Add shader's contributions to JSON for map object */
     public void addClientConfiguration(JSONObject mapObject) {
         s(mapObject, "shader", name);
+    }
+    @Override
+    public void exportAsMaterialLibrary(DynmapCommandSender sender, OBJExport out) throws IOException {
+        throw new IOException("Export unsupported");
+    }
+    private static final String[] nulllist = new String[0];
+    @Override
+    public String[] getCurrentBlockMaterials(int blkid, int blkdata, int renderdata, MapIterator mapiter, int[] txtidx, BlockStep[] steps) {
+        return nulllist;
     }
 }

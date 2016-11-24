@@ -1,6 +1,8 @@
 package org.dynmap.utils;
 
+import java.util.ArrayList;
 import java.util.ConcurrentModificationException;
+import java.util.List;
 
 /**
  * This is a copy of java.util.HashMap which uses longs as keys
@@ -188,6 +190,21 @@ public class DynIntHashMap
         this(11, 0.75f);
     }
 
+    public DynIntHashMap(DynIntHashMap map) {
+        loadFactor = map.loadFactor;
+        table = new Entry[map.table.length];
+        threshold = map.threshold;
+        size = 0;
+        for (int i = 0; i < table.length; i++) {
+            Entry e = map.table[i];
+            while (e != null) {
+                table[i] = new Entry(e.key, e.value, table[i]);
+                size++;
+                e = e.next;
+            }
+        }
+    }
+    
     /**
      * Returns the number of key-value mappings in this map.
      *
@@ -431,5 +448,31 @@ public class DynIntHashMap
 
     float loadFactor() {
         return loadFactor;
+    }
+
+    // Return keys matching given value
+    public List<Integer> keysWithValue(Object value) {
+        Entry tab[] = table;
+        ArrayList<Integer> match = new ArrayList<Integer>();
+
+        if (value==null) {
+            for (int i = tab.length ; i-- > 0 ;) {
+                for (Entry e = tab[i] ; e != null ; e = e.next) {
+                    if (e.value==null) {
+                        match.add(e.key);
+                    }
+                }
+            }
+        } else {
+            for (int i = tab.length ; i-- > 0 ;) {
+                for (Entry e = tab[i] ; e != null ; e = e.next) {
+                    if (value.equals(e.value)) {
+                        match.add(e.key);
+                    }
+                }
+            }
+        }
+
+        return match;
     }
 }

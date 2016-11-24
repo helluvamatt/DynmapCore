@@ -1,11 +1,13 @@
 package org.dynmap;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.Writer;
 import java.lang.reflect.Constructor;
@@ -36,18 +38,26 @@ import org.dynmap.common.DynmapListenerManager;
 import org.dynmap.common.DynmapListenerManager.EventType;
 import org.dynmap.common.DynmapPlayer;
 import org.dynmap.common.DynmapServerInterface;
-import org.dynmap.common.VersionCheck;
 import org.dynmap.debug.Debug;
 import org.dynmap.debug.Debugger;
+import org.dynmap.exporter.DynmapExpCommands;
 import org.dynmap.hdmap.HDBlockModels;
 import org.dynmap.hdmap.HDMapManager;
 import org.dynmap.hdmap.TexturePack;
+import org.dynmap.hdmap.TexturePack.HDTextureMap;
 import org.dynmap.markers.MarkerAPI;
 import org.dynmap.markers.impl.MarkerAPIImpl;
-import org.dynmap.servlet.FileLockResourceHandler;
+import org.dynmap.modsupport.ModSupportImpl;
+import org.dynmap.servlet.FileResourceHandler;
 import org.dynmap.servlet.JettyNullLogger;
 import org.dynmap.servlet.LoginServlet;
-import org.dynmap.utils.FileLockManager;
+import org.dynmap.servlet.MapStorageResourceHandler;
+import org.dynmap.storage.MapStorage;
+import org.dynmap.storage.filetree.FileTreeMapStorage;
+import org.dynmap.storage.mysql.MySQLMapStorage;
+import org.dynmap.storage.sqllte.SQLiteMapStorage;
+import org.dynmap.utils.BlockStep;
+import org.dynmap.utils.ImageIOManager;
 import org.dynmap.web.BanIPFilter;
 import org.dynmap.web.CustomHeaderFilter;
 import org.dynmap.web.FilterHandler;
@@ -95,6 +105,7 @@ public class DynmapCore implements DynmapCommonAPI {
     public Events events = new Events();
     public String deftemplatesuffix = "";
     private DynmapMapCommands dmapcmds = new DynmapMapCommands();
+    private DynmapExpCommands dynmapexpcmds = new DynmapExpCommands();
     boolean bettergrass = false;
     boolean smoothlighting = false;
     private boolean ctmsupport = false;
@@ -107,6 +118,7 @@ public class DynmapCore implements DynmapCommonAPI {
     private boolean transparentLeaves = true;
     private List<String> sortPermissionNodes;
     private int perTickLimit = 50;   // 50 ms
+    private boolean dumpMissing = false;
         
     public CompassMode compassmode = CompassMode.PRE19;
     private int     config_hashcode;    /* Used to signal need to reload web configuration (world changes, config update, etc) */
@@ -121,6 +133,8 @@ public class DynmapCore implements DynmapCommonAPI {
     private String[] blocknames = new String[0];
     private int[] blockmaterialmap = new int[0];
     private String[] biomenames = new String[0];
+    private Map<String, Integer> blockmap = null;
+    private Map<String, Integer> itemmap = null;
     
     private boolean loginRequired;
     
@@ -138,7 +152,9 @@ public class DynmapCore implements DynmapCommonAPI {
     
     private File dataDirectory;
     private File tilesDirectory;
+    private File exportDirectory;
     private String plugin_ver;
+    private MapStorage defaultStorage;
     
     private String[] deftriggers = { };
 
@@ -178,7 +194,9 @@ public class DynmapCore implements DynmapCommonAPI {
     public final File getTilesFolder() {
         return tilesDirectory;
     }
-    
+    public final File getExportFolder() {
+        return exportDirectory;
+    }
     public void setMinecraftVersion(String mcver) {
         this.platformVersion = mcver;
     }
@@ -316,7 +334,7 @@ public class DynmapCore implements DynmapCommonAPI {
         /* First, prime the templates directory with default standard templates, if needed */
         for(String stdtemplate : stdtemplates) {
             File f = new File(templatedir, stdtemplate);
-            createDefaultFileFromResource("/templates/" + stdtemplate, f);
+            updateVersionUsingDefaultResource("/templates/" + stdtemplate, f);
         }
         /* Now process files */
         String[] templates = templatedir.list();
@@ -375,6 +393,30 @@ public class DynmapCore implements DynmapCommonAPI {
         if (!tilesDirectory.isDirectory() && !tilesDirectory.mkdirs()) {
             Log.warning("Could not create directory for tiles ('" + tilesDirectory + "').");
         }
+        // Prime the exports directory
+        exportDirectory = getFile(configuration.getString("exportpath", "export"));
+        if (!exportDirectory.isDirectory() && !exportDirectory.mkdirs()) {
+            Log.warning("Could not create directory for exports ('" + exportDirectory + "').");
+        }
+        // Create default storage handler
+        String storetype = configuration.getString("storage/type", "filetree");
+        if (storetype.equals("filetree")) {
+            defaultStorage = new FileTreeMapStorage();
+        }
+        else if (storetype.equals("sqlite")) {
+            defaultStorage = new SQLiteMapStorage();
+        }
+        else if (storetype.equals("mysql")) {
+            defaultStorage = new MySQLMapStorage();
+        }
+        else {
+            Log.severe("Invalid storage type for map data: " + storetype);
+            return false;
+        }
+        if (!defaultStorage.init(this)) {
+            Log.severe("Map storage initialization failure");
+            return false;
+        }
         
         /* Register API with plugin, if needed */
         if(!markerAPIInitialized()) {
@@ -391,8 +433,10 @@ public class DynmapCore implements DynmapCommonAPI {
         /* Update extracted files, if needed */
         updateExtractedFiles();
         /* Initialize authorization manager */
-        if(configuration.getBoolean("login-enabled", false))
+        if(configuration.getBoolean("login-enabled", false)) {
             authmgr = new WebAuthManager(this);
+            defaultStorage.setLoginEnabled(this);
+        }
 
         /* Add options to avoid 0.29 re-render (fixes very inconsistent with previous maps) */
         HDMapManager.waterlightingfix = configuration.getBoolean("correct-water-lighting", false);
@@ -438,10 +482,18 @@ public class DynmapCore implements DynmapCommonAPI {
         perTickLimit = configuration.getInteger("per-tick-time-limit", 50);
         if (perTickLimit < 5) perTickLimit = 5;
         
+        dumpMissing = configuration.getBoolean("dump-missing-blocks", false);
+        
         /* Load preupdate/postupdate commands */
-        FileLockManager.preUpdateCommand = configuration.getString("custom-commands/image-updates/preupdatecommand", "");
-        FileLockManager.postUpdateCommand = configuration.getString("custom-commands/image-updates/postupdatecommand", "");
+        ImageIOManager.preUpdateCommand = configuration.getString("custom-commands/image-updates/preupdatecommand", "");
+        ImageIOManager.postUpdateCommand = configuration.getString("custom-commands/image-updates/postupdatecommand", "");
 
+        /* Get block and item maps */
+        blockmap = server.getBlockUniqueIDMap();
+        itemmap = server.getItemUniqueIDMap();
+
+        /* Process mod support */
+        ModSupportImpl.complete(this.dataDirectory);
         /* Load block models */
         Log.verboseinfo("Loading models...");
         HDBlockModels.loadModels(this, configuration);
@@ -526,10 +578,106 @@ public class DynmapCore implements DynmapCommonAPI {
         Log.info("version " + plugin_ver + " is enabled - core version " + version );
 
         events.<Object>trigger("initialized", null);
-        
-        VersionCheck.runCheck(this);
+                
+        //dumpColorMap("standard.txt", "standard");
+        //dumpColorMap("dokudark.txt", "dokudark.zip");
+        //dumpColorMap("dokulight.txt", "dokulight.zip");
+        //dumpColorMap("dokuhigh.txt", "dokuhigh.zip");
+        //dumpColorMap("misa.txt", "misa.zip");
+        //dumpColorMap("sphax.txt", "sphax.zip");
         
         return true;
+    }
+    
+    void dumpColorMap(String id, String name) {
+        int[] sides = new int[] { BlockStep.Y_MINUS.ordinal(), BlockStep.X_PLUS.ordinal(), BlockStep.Z_PLUS.ordinal(), 
+                BlockStep.Y_PLUS.ordinal(), BlockStep.X_MINUS.ordinal(), BlockStep.Z_MINUS.ordinal() };
+        FileWriter fw = null;
+        try {
+            fw = new FileWriter(id);
+            TexturePack tp = TexturePack.getTexturePack(this, name);
+            if (tp == null) return;
+            tp = tp.resampleTexturePack(1);
+            if (tp == null) return;
+            Color c = new Color();
+            for (int blkid = 1; blkid < 256; blkid++) {
+                int meta0color = 0;
+                for (int blkmeta = 0; blkmeta < 16; blkmeta++) {
+                    HDTextureMap map = HDTextureMap.getMap(blkid, blkmeta, blkmeta);
+                    boolean done = false;
+                    for (int i = 0; (!done) && (i < sides.length); i++) {
+                        int idx = map.getIndexForFace(sides[i]);
+                        if (idx < 0) continue;
+                        int rgb[] = tp.getTileARGB(idx % 1000000);
+                        if (rgb == null) continue;
+                        if (rgb[0] == 0) continue;
+                        c.setARGB(rgb[0]);
+                        idx = (idx / 1000000);
+                        switch(idx) {
+                            case 1: // grass
+                            case 18: // grass
+                                System.out.println("Used grass for " + blkid + ":" + blkmeta);
+                                c.blendColor(tp.getTrivialGrassMultiplier() | 0xFF000000);
+                                break;
+                            case 2: // foliage
+                            case 19: // foliage
+                            case 22: // foliage
+                                System.out.println("Used foliage for " + blkid + ":" + blkmeta);
+                                c.blendColor(tp.getTrivialFoliageMultiplier() | 0xFF000000);
+                                break;
+                            case 13: // pine
+                                c.blendColor(0x619961 | 0xFF000000);
+                                break;
+                            case 14: // birch
+                                c.blendColor(0x80a755 | 0xFF000000);
+                                break;
+                            case 15: // lily
+                                c.blendColor(0x208030 | 0xFF000000);
+                                break;
+                            case 3: // water
+                            case 20: // water
+                                System.out.println("Used water for " + blkid + ":" + blkmeta);
+                                c.blendColor(tp.getTrivialWaterMultiplier() | 0xFF000000);
+                                break;
+                            case 12: // clear inside
+                                if((blkid == 8) || (blkid == 9)) { // special case for water
+                                    System.out.println("Used water for " + blkid + ":" + blkmeta);
+                                    c.blendColor(tp.getTrivialWaterMultiplier() | 0xFF000000);
+                                }
+                                break;
+                        }
+                        int custmult = tp.getCustomBlockMultiplier(blkid, blkmeta);
+                        if (custmult != 0xFFFFFF) {
+                            System.out.println(String.format("Custom color: %06x for %d:%d", custmult, blkid, blkmeta));
+                            if ((custmult & 0xFF000000) == 0) {
+                                custmult |= 0xFF000000;
+                            }
+                            c.blendColor(custmult);
+                        }
+                        String ln = "";
+                        if (blkmeta == 0) {
+                            meta0color = c.getARGB();
+                            ln = blkid + " ";
+                        }
+                        else {
+                            ln = blkid + ":" + blkmeta + " ";
+                        }
+                        if ((blkmeta == 0) || (meta0color != c.getARGB())) {
+                            ln += c.getRed() + " " + c.getGreen() + " " + c.getBlue() + " " + c.getAlpha();
+                            ln += " " + (c.getRed()*4/5) + " " + (c.getGreen()*4/5) + " " + (c.getBlue()*4/5) + " " + c.getAlpha();
+                            ln += " " + (c.getRed()/2) + " " + (c.getGreen()/2) + " " + (c.getBlue()/2) + " " + c.getAlpha();
+                            ln += " " + (c.getRed()*2/5) + " " + (c.getGreen()*2/5) + " " + (c.getBlue()*2/5) + " " + c.getAlpha() + "\n";
+                            fw.write(ln);
+                        }
+                        done = true;
+                    }
+                }
+            }
+        } catch (IOException iox) {
+
+        } finally {
+            if (fw != null) { try { fw.close(); } catch (IOException x) {} }
+        }
     }
 
     private void playerJoined(DynmapPlayer p) {
@@ -668,17 +816,14 @@ public class DynmapCore implements DynmapCommonAPI {
         
         final boolean allow_symlinks = configuration.getBoolean("allow-symlinks", false);
         router = new HandlerRouter() {{
-            this.addHandler("/", new FileLockResourceHandler() {{
+            this.addHandler("/", new FileResourceHandler() {{
                 this.setAliases(allow_symlinks);
                 this.setWelcomeFiles(new String[] { "index.html" });
                 this.setDirectoriesListed(true);
                 this.setBaseResource(createFileResource(getFile(getWebPath()).getAbsolutePath()));
             }});
-            this.addHandler("/tiles/*", new FileLockResourceHandler() {{
-                this.setAliases(allow_symlinks);
-                this.setWelcomeFiles(new String[] { });
-                this.setDirectoriesListed(true);
-                this.setBaseResource(createFileResource(tilesDirectory.getAbsolutePath()));
+            this.addHandler("/tiles/*", new MapStorageResourceHandler() {{
+                this.setCore(DynmapCore.this);
             }});
         }};
 
@@ -882,6 +1027,7 @@ public class DynmapCore implements DynmapCommonAPI {
         "purgequeue",
         "purgemap",
         "purgeworld",
+        "quiet",
         "ids-for-ip",
         "ips-for-id",
         "add-id-for-ip",
@@ -943,6 +1089,7 @@ public class DynmapCore implements DynmapCommonAPI {
         new CommandInfo("dynmap", "purgeworld", "<world>", "Delete all existing directories for world <world>."),
         new CommandInfo("dynmap", "pause", "Show render pause state."),
         new CommandInfo("dynmap", "pause", "<all|none|full|update>", "Set render pause state."),
+        new CommandInfo("dynmap", "quiet", "Stop output from active jobs."),
         new CommandInfo("dynmap", "ids-for-ip", "<ipaddress>", "Show player IDs that have logged in from address <ipaddress>."),
         new CommandInfo("dynmap", "ips-for-id", "<player>", "Show IP addresses that have been used for player <player>."),
         new CommandInfo("dynmap", "add-id-for-ip", "<player> <ipaddress>", "Associate player <player> with IP address <ipaddress>."),
@@ -1007,7 +1154,15 @@ public class DynmapCore implements DynmapCommonAPI {
         new CommandInfo("dmap", "mapadd", "<world>:<map> <attrib>:<value> <attrib>:<value>", "Create map for world <world> with name <map> using provided attributes."),
         new CommandInfo("dmap", "mapset", "<world>:<map> <attrib>:<value> <attrib>:<value>", "Update map <map> of world <world> with new attribute values."),
         new CommandInfo("dmap", "worldreset", "<world>", "Reset world <world> to default template for world type"),
-        new CommandInfo("dmap", "worldreset", "<world> <templatename>", "Reset world <world> to temaplte <templatename>.")
+        new CommandInfo("dmap", "worldreset", "<world> <templatename>", "Reset world <world> to temaplte <templatename>."),
+        new CommandInfo("dynmapexp", "", "Set and execute exports in OBJ format."),
+        new CommandInfo("dynmapexp", "set", "<attrib> <value> ...", "Set bounds attributes for OBJ export."),
+        new CommandInfo("dynmapexp", "reset", "Reset all bounds for OBJ export."),
+        new CommandInfo("dynmapexp", "pos0", "Set first corner of bounds to player's position."),
+        new CommandInfo("dynmapexp", "pos1", "Set second corner of bounds to player's position."),
+        new CommandInfo("dynmapexp", "radius", "<radius>", "Set bounds to radius <radius> around player's position."),
+        new CommandInfo("dynmapexp", "export", "<name>", "Export map data to <name>.zip in export path."),
+        new CommandInfo("dynmapexp", "purge", "<name>", "Purge exported map data <name>.zip from export path.")
     };
     
     public void printCommandHelp(DynmapCommandSender sender, String cmd, String subcmd) {
@@ -1045,6 +1200,10 @@ public class DynmapCore implements DynmapCommonAPI {
     }
     
     public boolean processCommand(DynmapCommandSender sender, String cmd, String commandLabel, String[] args) {
+        if (mapManager == null) { // Initialization faulure
+            sender.sendMessage("Dynmap failed to initialize properly: commands not available");
+            return true;
+        }
         if(cmd.equalsIgnoreCase("dmarker")) {
             if(!MarkerAPIImpl.onCommand(this, sender, cmd, commandLabel, args)) {
                 printCommandHelp(sender, cmd, (args.length > 0)?args[0]:"");
@@ -1053,6 +1212,12 @@ public class DynmapCore implements DynmapCommonAPI {
         }
         if (cmd.equalsIgnoreCase("dmap")) {
             if(!dmapcmds.processCommand(sender, cmd, commandLabel, args, this)) {
+                printCommandHelp(sender, cmd, (args.length > 0)?args[0]:"");
+            }
+            return true;
+        }
+        if (cmd.equalsIgnoreCase("dynmapexp")) {
+            if(!dynmapexpcmds.processCommand(sender, cmd, commandLabel, args, this)) {
                 printCommandHelp(sender, cmd, (args.length > 0)?args[0]:"");
             }
             return true;
@@ -1094,7 +1259,12 @@ public class DynmapCore implements DynmapCommonAPI {
                 String mapname = null;
                 DynmapLocation loc = null;
                 if((args.length == 2) || (args.length == 3)) {  /* Just radius, or <radius> <map> */
-                    radius = Integer.parseInt(args[1]); /* Parse radius */
+                    try {
+                        radius = Integer.parseInt(args[1]); /* Parse radius */
+                    } catch (NumberFormatException nfe) {
+                        sender.sendMessage("Invalid radius: " + args[1]);
+                        return true;
+                    }
                     if(radius < 0)
                         radius = 0;
                     if(args.length > 2)
@@ -1110,10 +1280,26 @@ public class DynmapCore implements DynmapCommonAPI {
                         sender.sendMessage("World '" + args[1] + "' not defined/loaded");
                     }
                     int x = 0, z = 0;
-                    x = Integer.parseInt(args[2]);
-                    z = Integer.parseInt(args[3]);
-                    if(args.length > 4)
-                        radius = Integer.parseInt(args[4]);
+                    try {
+                        x = Integer.parseInt(args[2]);
+                    } catch (NumberFormatException nfe) {
+                        sender.sendMessage("Invalid x coord: " + args[2]);
+                        return true;
+                    }
+                    try {
+                        z = Integer.parseInt(args[3]);
+                    } catch (NumberFormatException nfe) {
+                        sender.sendMessage("Invalid z coord: " + args[3]);
+                        return true;
+                    }
+                    if(args.length > 4) {
+                        try {
+                            radius = Integer.parseInt(args[4]);
+                        } catch (NumberFormatException nfe) {
+                            sender.sendMessage("Invalid radius: " + args[4]);
+                            return true;
+                        }
+                    }
                     if(args.length > 5)
                         mapname = args[5];
                     if(w != null)
@@ -1130,7 +1316,7 @@ public class DynmapCore implements DynmapCommonAPI {
                     if (player != null)
                         loc = player.getLocation();
                     else
-                        sender.sendMessage("Command require <world> <x> <z> <radius> if issued from console.");
+                        sender.sendMessage("Command require <world> <x> <z> <mapname> if issued from console.");
                 }
                 else {  /* <world> <x> <z> */
                     DynmapWorld w = mapManager.worldsLookup.get(args[1]);   /* Look up world */
@@ -1138,8 +1324,18 @@ public class DynmapCore implements DynmapCommonAPI {
                         sender.sendMessage("World '" + args[1] + "' not defined/loaded");
                     }
                     int x = 0, z = 0;
-                    x = Integer.parseInt(args[2]);
-                    z = Integer.parseInt(args[3]);
+                    try {
+                        x = Integer.parseInt(args[2]);
+                    } catch (NumberFormatException nfe) {
+                        sender.sendMessage("Invalid x coord: " + args[2]);
+                        return true;
+                    }
+                    try {
+                        z = Integer.parseInt(args[3]);
+                    } catch (NumberFormatException nfe) {
+                        sender.sendMessage("Invalid z coord: " + args[3]);
+                        return true;
+                    }
                     if(args.length > 4)
                         mapname = args[4];
                     if(w != null)
@@ -1357,6 +1553,9 @@ public class DynmapCore implements DynmapCommonAPI {
                 else
                     sender.sendMessage("Login support is not enabled");
             }
+            else if (c.equals("quiet") && checkPlayerPermission(sender, "quiet")) {
+                mapManager.setJobsQuiet(sender);
+            }
             else if(c.equals("help")) {
                 printCommandHelp(sender, cmd, (args.length > 1)?args[1]:"");
             }
@@ -1502,6 +1701,29 @@ public class DynmapCore implements DynmapCommonAPI {
     }
 
     /*
+     * Update if new version
+     */
+    public boolean updateVersionUsingDefaultResource(String resourcename, File deffile) {
+        InputStream in = getClass().getResourceAsStream(resourcename);
+        if(in == null) {
+            Log.severe("Unable to find resource - " + resourcename);
+            return false;
+        }
+        if(deffile.canRead() == false) {    /* Doesn't exist? */
+            return createDefaultFileFromResource(resourcename, deffile);
+        }
+        /* Load default from resource */
+        ConfigurationNode def_fc = new ConfigurationNode(in);
+        /* Load existing from file */
+        ConfigurationNode fc = new ConfigurationNode(deffile);
+        fc.load();
+        if (fc.getString("version", "").equals(def_fc.getString("version", ""))) {
+            return true;
+        }
+        deffile.delete();
+        return createDefaultFileFromResource(resourcename, deffile);
+    }
+    /*
      * Add in any missing sections to existing file, using resource
      */
     public boolean updateUsingDefaultResource(String resourcename, File deffile, String basenode) {
@@ -1572,8 +1794,9 @@ public class DynmapCore implements DynmapCommonAPI {
     }
     /**
      * Send generic message to all web users
-     * @param sender - label for sender of message ("[<sender>] nessage") - if null, no from notice
+     * @param sender - label for sender of message ("[&lt;sender&gt;] message") - if null, no from notice
      * @param msg - message to be sent
+     * @return true if successful
      */
     public boolean sendBroadcastToWeb(String sender, String msg) {
         if(mapManager != null) {
@@ -1584,6 +1807,7 @@ public class DynmapCore implements DynmapCommonAPI {
     }
     /**
      * Register markers API - used by component to supply marker API to plugin
+     * @param api - marker API
      */
     public void registerMarkerAPI(MarkerAPIImpl api) {
         markerapi = api;
@@ -1597,6 +1821,7 @@ public class DynmapCore implements DynmapCommonAPI {
     }
     /*
      * Test if full renders are paused
+     * @return true if paused
      */
     public boolean getPauseFullRadiusRenders() {
         return mapManager.getPauseFullRadiusRenders();
@@ -1610,18 +1835,23 @@ public class DynmapCore implements DynmapCommonAPI {
     }
     /*
      * Test if update renders are paused
+     * @return true if paused
      */
     public boolean getPauseUpdateRenders() {
         return mapManager.getPauseUpdateRenders();
     }
     /**
      * Get list of IDs seen on give IP (most recent to least recent)
+     * @param addr - IP address
+     * @return list of IDs
      */
     public List<String> getIDsForIP(InetAddress addr) {
         return getIDsForIP(addr.getHostAddress());
     }
     /**
      * Get list of IDs seen on give IP (most recent to least recent)
+     * @param ip - IP to check
+     * @return list of IDs
      */
     public List<String> getIDsForIP(String ip) {
         LinkedList<String> ids = ids_by_ip.get(ip);
@@ -1692,9 +1922,9 @@ public class DynmapCore implements DynmapCommonAPI {
         if(playerdisplay == null) playerdisplay = playerid;
         if((mapManager != null) && (playerList != null) && (playerList.isVisiblePlayer(playerid))) {
             if(isjoin)
-                mapManager.pushUpdate(new Client.PlayerJoinMessage(playerid, playerdisplay));
+                mapManager.pushUpdate(new Client.PlayerJoinMessage(playerdisplay, playerid));
             else
-                mapManager.pushUpdate(new Client.PlayerQuitMessage(playerid, playerdisplay));
+                mapManager.pushUpdate(new Client.PlayerQuitMessage(playerdisplay, playerid));
         }
     }
 
@@ -1915,8 +2145,6 @@ public class DynmapCore implements DynmapCommonAPI {
         Runnable c = new Runnable() {
             @Override
             public void run() {
-                mapManager.pushUpdate(new Client.ChatMessage("web", null, name, message, null));
-
                 ChatEvent event = new ChatEvent("web", name, message);
                 events.trigger("webchat", event);
             }
@@ -1949,18 +2177,18 @@ public class DynmapCore implements DynmapCommonAPI {
         return false;
     }
     
-    String getLoginPHP() {
+    String getLoginPHP(boolean wrap) {
         if(authmgr != null)
-            return authmgr.getLoginPHP();
+            return authmgr.getLoginPHP(wrap);
         else
             return null;
     }
     
-    String getAccessPHP() {
+    String getAccessPHP(boolean wrap) {
         if(authmgr != null)
-            return authmgr.getAccessPHP();
+            return authmgr.getAccessPHP(wrap);
         else
-            return WebAuthManager.getDisabledAccessPHP(this);
+            return WebAuthManager.getDisabledAccessPHP(this, wrap);
     }
     
     boolean pendingRegisters() {
@@ -2059,6 +2287,25 @@ public class DynmapCore implements DynmapCommonAPI {
         if (prevver.equals(this.getDynmapCoreVersion())) {
             return;
         }
+        /* Get deleted file list */
+        InputStream in = getClass().getResourceAsStream("/deleted.txt");
+        if(in != null) {
+            try {
+                BufferedReader br = new BufferedReader(new InputStreamReader(in));
+                String line;
+                while ((line = br.readLine()) != null) {
+                    if (line.length() == 0) continue;
+                    if (line.startsWith("#")) continue;
+                    File newfile = new File(df, line);
+                    newfile.delete();
+                }
+            } catch (IOException iox) {
+                Log.warning("Exception while processing deleted files - " + iox.getMessage());
+            } finally {
+                try { in.close(); } catch (IOException x) {}
+            }
+        }
+
         /* Open JAR as ZIP */
         ZipFile zf = null;
         FileOutputStream fos = null;
@@ -2132,9 +2379,51 @@ public class DynmapCore implements DynmapCommonAPI {
     public int getMaxTickUseMS() {
         return perTickLimit;
     }
+    public boolean dumpMissingBlocks() {
+        return dumpMissing;
+    }
     // Notice that server has finished starting (needed for forge, which starts dynmap before full server is running)
     public void serverStarted() {
         events.<Object>trigger("server-started", null);
+    }
+    // Normalize ID (strip out submods)
+    public String getNormalizedModID(String mod) {
+        int idx = mod.indexOf('|');
+        if (idx > 0) mod = mod.substring(0, idx);
+        return mod;
+    }
+    // Add mod block IDs to value map
+    public void addModBlockItemIDs(String mod, Map<String, Integer> modvals) {
+        mod = getNormalizedModID(mod);
+        for (String k : blockmap.keySet()) {
+            String[] ks = k.split(":", 2);
+            if (ks.length != 2) continue;
+            int id = blockmap.get(k);
+            ks[0] = getNormalizedModID(ks[0]);
+            if (mod.equals(ks[0])) {
+                modvals.put("%" + ks[1], id);
+            }
+        }
+        for (String k : itemmap.keySet()) {
+            String[] ks = k.split(":", 2);
+            if (ks.length != 2) continue;
+            int id = itemmap.get(k);
+            ks[0] = getNormalizedModID(ks[0]);
+            if (mod.equals(ks[0])) {
+                modvals.put("&" + ks[1], id);
+            }
+        }
+    }
+
+    @Override
+    public void processSignChange(int blkid, String world, int x, int y, int z,
+            String[] lines, String playerid) {
+        DynmapPlayer dp = server.getPlayer(playerid);
+        listenerManager.processSignChangeEvent(EventType.SIGN_CHANGE, blkid, world, x, y, z, lines, dp);
+    }
+    
+    public MapStorage getDefaultMapStorage() {
+        return defaultStorage;
     }
 }
 

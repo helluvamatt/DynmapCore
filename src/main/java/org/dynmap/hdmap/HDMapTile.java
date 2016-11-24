@@ -3,7 +3,6 @@ package org.dynmap.hdmap;
 import org.dynmap.DynmapChunk;
 import org.dynmap.DynmapWorld;
 import org.dynmap.MapManager;
-import org.dynmap.MapType;
 
 import java.util.List;
 import org.dynmap.MapTile;
@@ -43,24 +42,6 @@ public class HDMapTile extends MapTile {
     }
 
     @Override
-    public String getFilename() {
-        return getFilename("hdmap", MapType.ImageFormat.FORMAT_PNG);
-    }
-
-    public String getFilename(String prefix, MapType.ImageFormat format) {
-        return prefix + "/"  + (tx >> 5) + '_' + (ty >> 5) + '/' + tx + "_" + ty + "." + format.getFileExt();
-    }
-
-    @Override
-    public String getDayFilename() {
-        return getDayFilename("hdmap", MapType.ImageFormat.FORMAT_PNG);
-    }
-
-    public String getDayFilename(String prefix, MapType.ImageFormat format) {
-        return prefix + "_day/"  + (tx >> 5) + '_' + (ty >> 5) + '/' + tx + "_" + ty + "." + format.getFileExt();
-    }
-    
-    @Override
     public int hashCode() {
         return tx ^ ty ^ perspective.hashCode() ^ world.hashCode() ^ boostzoom;
     }
@@ -77,13 +58,9 @@ public class HDMapTile extends MapTile {
         return o.tx == tx && o.ty == ty && (perspective == o.perspective) && (o.world == world) && (o.boostzoom == boostzoom);
     }
 
-    public String getKey(String prefix) {
-        return world.getName() + "." + prefix;
-    }
-
     @Override
     public String toString() {
-        return world.getName() + ":" + getFilename();
+        return world.getName() + ":" + perspective.getName() + "," + tx + "," + ty + ":" + boostzoom;
     }
     
     @Override

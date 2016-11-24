@@ -3,9 +3,9 @@ package org.dynmap.hdmap;
 import static org.dynmap.JSONUtils.a;
 import static org.dynmap.JSONUtils.s;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+
 import org.dynmap.Client;
 import org.dynmap.ConfigurationNode;
 import org.dynmap.DynmapChunk;
@@ -15,7 +15,9 @@ import org.dynmap.Log;
 import org.dynmap.MapManager;
 import org.dynmap.MapTile;
 import org.dynmap.MapType;
-import org.dynmap.debug.Debug;
+import org.dynmap.storage.MapStorage;
+import org.dynmap.storage.MapStorageTile;
+import org.dynmap.storage.MapStorageTileEnumCB;
 import org.dynmap.utils.TileFlags;
 import org.json.simple.JSONObject;
 
@@ -136,6 +138,7 @@ public class HDMap extends MapType {
         this.bg_day_cfg = configuration.getString("backgroundday");
         this.bg_night_cfg = configuration.getString("backgroundnight");
         this.mapzoomin = configuration.getInteger("mapzoomin", 2);
+        this.mapzoomout = configuration.getInteger("mapzoomout", this.mapzoomout);
         this.boostzoom = configuration.getInteger("boostzoom", 0);
         if(this.boostzoom < 0) this.boostzoom = 0;
         if(this.boostzoom > 3) this.boostzoom = 3;
@@ -162,6 +165,7 @@ public class HDMap extends MapType {
             cn.put("lighting", lighting.getName());
         cn.put("image-format", imgfmtstring);
         cn.put("mapzoomin", mapzoomin);
+        cn.put("mapzoomout", mapzoomout);
         cn.put("boostzoom", boostzoom);
         if(bg_cfg != null)
             cn.put("background", bg_cfg);
@@ -201,30 +205,6 @@ public class HDMap extends MapType {
     public List<DynmapChunk> getRequiredChunks(MapTile tile) {
         return perspective.getRequiredChunks(tile);
     }
-
-    @Override
-    public List<ZoomInfo> baseZoomFileInfo() {
-        ArrayList<ZoomInfo> s = new ArrayList<ZoomInfo>();
-        s.add(new ZoomInfo(prefix, getBackgroundARGBNight()));
-        if(lighting.isNightAndDayEnabled())
-            s.add(new ZoomInfo(prefix + "_day", getBackgroundARGBDay()));
-        return s;
-    }
-
-    public int baseZoomFileStepSize() { return 1; }
-
-    private static final int[] stepseq = { 3, 1, 2, 0 };
-    
-    public MapStep zoomFileMapStep() { return MapStep.X_PLUS_Y_MINUS; }
-
-    public int[] zoomFileStepSequence() { return stepseq; }
-
-    /* How many bits of coordinate are shifted off to make big world directory name */
-    public int getBigWorldShift() { return 5; }
-
-    /* Returns true if big world file structure is in effect for this map */
-    @Override
-    public boolean isBigWorldMap(DynmapWorld w) { return true; } /* We always use it on these maps */
 
     /* Return number of zoom levels needed by this map (before extra levels from extrazoomout) */
     public int getMapZoomOutLevels() {
@@ -335,61 +315,35 @@ public class HDMap extends MapType {
         return bgcolornight;
     }
     
-    private HDMapTile fileToTile(DynmapWorld world, File f) {
-        String n = f.getName();
-        n = n.substring(0, n.lastIndexOf('.'));
-        if(n == null) return null;
-        String[] nt = n.split("_");
-        if(nt.length != 2) return null;
-        int xx, zz;
-        try {
-            xx = Integer.parseInt(nt[0]);
-            zz = Integer.parseInt(nt[1]);
-        } catch (NumberFormatException nfx) {
-            return null;
-        }
-        return new HDMapTile(world, perspective, xx, zz, 0);
-    }
-    
     public void purgeOldTiles(final DynmapWorld world, final TileFlags rendered) {
-        File basedir = new File(world.worldtilepath, prefix);   /* Get base directory for map */
-        FileCallback cb = new FileCallback() {
-            public void fileFound(File f, File parent, boolean day) {
-                String n = f.getName();
-                if(n.startsWith("z")) { /* If zoom file */
-                    if(n.startsWith("z_")) {    /* First tier of zoom? */
-                        File ff = new File(parent, n.substring(2)); /* Make file for render tier, and drive update */
-                        HDMapTile tile = fileToTile(world, ff); /* Parse it */
-                        if(tile == null) return;
-                        if(rendered.getFlag(tile.tx, tile.ty) || rendered.getFlag(tile.tx+1, tile.ty) ||
-                                rendered.getFlag(tile.tx, tile.ty-1) || rendered.getFlag(tile.tx+1, tile.ty-1))
-                            return;
-                        world.enqueueZoomOutUpdate(ff);
+        final MapStorage ms = world.getMapStorage();
+        ms.enumMapTiles(world, this, new MapStorageTileEnumCB() {
+            @Override
+            public void tileFound(MapStorageTile tile, ImageEncoding fmt) {
+                if (fmt != getImageFormat().getEncoding()) { // Wrong format?  toss it
+                    /* Otherwise, delete tile */
+                    tile.delete();
+                }
+                else if (tile.zoom == 1) {   // First tier zoom?  sensitive to newly rendered tiles
+                    // If any were rendered, already triggered (and still needed
+                    if (rendered.getFlag(tile.x, tile.y) || rendered.getFlag(tile.x+1, tile.y) ||
+                        rendered.getFlag(tile.x, tile.y-1) || rendered.getFlag(tile.x+1, tile.y-1)) {
+                        return;
                     }
-                    return;
+                    tile.enqueueZoomOutUpdate();
                 }
-                HDMapTile tile = fileToTile(world, f);
-                if(tile == null) return;
-
-                if(rendered.getFlag(tile.tx, tile.ty)) {  /* If we rendered this tile, its good */
-                    return;
+                else if (tile.zoom == 0) {
+                    if (rendered.getFlag(tile.x, tile.y)) {  /* If we rendered this tile, its good */
+                        return;
+                    }
+                    /* Otherwise, delete tile */
+                    tile.delete();
+                    /* Push updates, clear hash code, and signal zoom tile update */
+                    MapManager.mapman.pushUpdate(world, new Client.Tile(tile.getURI()));
+                    tile.enqueueZoomOutUpdate();
                 }
-                Debug.debug("clean up " + f.getPath());
-                /* Otherwise, delete tile */
-                f.delete();
-                /* Push updates, clear hash code, and signal zoom tile update */
-                MapManager.mapman.pushUpdate(world, 
-                                             new Client.Tile(day?tile.getDayFilename(prefix, getImageFormat()):tile.getFilename(prefix, getImageFormat())));
-                MapManager.mapman.hashman.updateHashCode(tile.getKey(prefix), day?"day":null, tile.tx, tile.ty, -1);
-                world.enqueueZoomOutUpdate(f);
             }
-                
-        };
-        walkMapTree(basedir, cb, false);
-        if(lighting.isNightAndDayEnabled()) {
-            basedir = new File(world.worldtilepath, prefix+"_day");
-            walkMapTree(basedir, cb, true);
-        }
+        });
     }
     
     public String getTitle() {
@@ -431,6 +385,13 @@ public class HDMap extends MapType {
     public boolean setMapZoomIn(int mzi) {
         if(mzi != mapzoomin) {
             mapzoomin = mzi;
+            return true;
+        }
+        return false;
+    }
+    public boolean setMapZoomOut(int mzi) {
+        if(mzi != mapzoomout) {
+            mapzoomout = mzi;
             return true;
         }
         return false;
@@ -491,4 +452,14 @@ public class HDMap extends MapType {
     public void addMapTiles(List<MapTile> list, DynmapWorld w, int tx, int ty) {
         list.add(new HDMapTile(w, this.perspective, tx, ty, boostzoom));
     }
+    
+    private static final ImageVariant[] dayVariant = { ImageVariant.STANDARD, ImageVariant.DAY };
+    
+    @Override
+    public ImageVariant[] getVariants() {
+        if (lighting.isNightAndDayEnabled())
+            return dayVariant;
+        return super.getVariants();
+    }
+
 }

@@ -9,7 +9,7 @@ public interface DynmapCommandSender {
     public boolean hasPrivilege(String privid);
     /**
      * Send given message to command sender
-     * @param msg - message to be sent (with color codes marked &0 to &F)
+     * @param msg - message to be sent (with color codes marked &amp;0 to &amp;F)
      */
     public void sendMessage(String msg);
     /**
@@ -19,10 +19,13 @@ public interface DynmapCommandSender {
     public boolean isConnected();
     /**
      * Is operator privilege
+     * @return true if operator
      */
     public boolean isOp();
     /**
      * Test for permission node (no dynmap. prefix assumed)
+     * @param node - permission ID
+     * @return true if allowed
      */
     public boolean hasPermissionNode(String node);
 }

@@ -117,14 +117,6 @@ patch:id=PostBack,Ox=0.45833,Oy=0.0,Oz=0.54166,Ux=1.45833,Uy=0.0,Uz=0.54166,Vx=0
 patch:id=PostLeft,Ox=0.45833,Oy=0.0,Oz=0.45833,Ux=0.45833,Uy=0.0,Uz=1.45833,Vx=0.45833,Vy=1.0,Vz=0.45833,visibility=top
 patch:id=PostRight,Ox=0.54166,Oy=0.0,Oz=0.45833,Ux=0.54166,Uy=0.0,Uz=1.45833,Vx=0.54166,Vy=1.0,Vz=0.45833,visibility=bottom
 
-# Door patches
-patch:id=DoorFront,Ox=0.0,Oy=0.0,Oz=0.0,Ux=1.0,Uy=0.0,Uz=0.0,Vx=0.0,Vy=1.0,Vz=0.0,visibility=bottom
-patch:id=DoorBack,Ox=0.0,Oy=0.0,Oz=0.1875,Ux=1.0,Uy=0.0,Uz=0.1875,Vx=0.0,Vy=1.0,Vz=0.1875,visibility=top
-patch:id=DoorLeft,Ox=0.0,Oy=0.0,Oz=0.0,Ux=0.0,Uy=0.0,Uz=1.0,Vx=0.0,Vy=1.0,Vz=0.0,Umin=0.0,Umax=0.1875,visibility=top
-patch:id=DoorRight,Ox=1.0,Oy=0.0,Oz=-0.8125,Ux=1.0,Uy=0.0,Uz=0.1875,Vx=1.0,Vy=1.0,Vz=-0.8125,Umin=0.8125,Umax=1.0,visibility=bottom
-patch:id=DoorTop,Ox=0.0,Oy=1.0,Oz=-0.8125,Ux=1.0,Uy=1.0,Uz=-0.8125,Vx=0.0,Vy=1.0,Vz=0.1875,Vmin=0.8125,Vmax=1.0,visibility=bottom
-patch:id=DoorBottom,Ox=0.0,Oy=0.0,Oz=0.0,Ux=1.0,Uy=0.0,Uz=0.0,Vx=0.0,Vy=0.0,Vz=1.0,Vmin=0.0,Vmax=0.1875,visibility=top
-
 # Vertical patch, X- facing side from xz=0.1875/0.0 to 0.1875/1.0
 patch:id=VertX01875,Ox=0.1875,Oy=0.0,Oz=0.0,Ux=0.1875,Uy=0.0,Uz=1.0,Vx=0.1875,Vy=1.0,Vz=0.0,visibility=top
 # Vertical patch, Z- facing side from xz=0.0/0.1875 to 1.0/0.1875
@@ -191,41 +183,10 @@ linkmap:id=54,linkalg=2
 linkmap:id=146,linkalg=2
 # Slab (stone, sandstone, wood, cobblestone)
 # Wood Slab
-block:id=44,id=126,data=0,data=1,data=2,data=3,data=4,data=5,data=6,data=7,scale=4
-layer:0,1
-****
-****
-****
-****
-layer:2,3
-----
-----
-----
-----
+boxblock:id=44,id=126,data=0,data=1,data=2,data=3,data=4,data=5,data=6,data=7,ymax=0.5
 # Top Slab (stone, sandstone, wood, cobblestone)
 # Top Wood Slab
-block:id=44,id=126,data=8,data=9,data=10,data=11,data=12,data=13,data=14,data=15,scale=4
-layer:0,1
-----
-----
-----
-----
-layer:2,3
-****
-****
-****
-****
-# Snow
-block:id=78,data=0,data=8,scale=8
-layer:0
-********
-********
-********
-********
-********
-********
-********
-********
+boxblock:id=44,id=126,data=8,data=9,data=10,data=11,data=12,data=13,data=14,data=15,ymin=0.5
 # Snow
 boxblock:id=78,data=0,data=8,ymax=0.125
 boxblock:id=78,data=1,data=9,ymax=0.25
@@ -500,18 +461,9 @@ rotate:id=26,data=0,rot=180
 block:id=26,data=3,scale=16
 rotate:id=26,data=0,rot=270
 
-# Wooden Door - set render alg
-linkmap:id=64,linkalg=6
-# Iron Door - set render alg
-linkmap:id=71,linkalg=6
-# Wooden/Iron Door - top/bottom - north side of block
-patchblock:id=64,id=71,data=0,data=4,data=8,data=12,patch0=DoorFront@270,patch1=DoorBack@270,patch2=DoorLeft@270,patch3=DoorRight@270,patch4=DoorTop@270,patch5=DoorBottom@270
-# Wooden/Iron Door - top/bottom - east side of block
-patchblock:id=64,id=71,data=1,data=5,data=9,data=13,patch0=DoorFront,patch1=DoorBack,patch2=DoorLeft,patch3=DoorRight,patch4=DoorTop,patch5=DoorBottom
-# Wooden/Iron Door - top/bottom - south side of block
-patchblock:id=64,id=71,data=2,data=6,data=10,data=14,patch0=DoorFront@90,patch1=DoorBack@90,patch2=DoorLeft@90,patch3=DoorRight@90,patch4=DoorTop@90,patch5=DoorBottom@90
-# Wooden/Iron Door - top/bottom - south side of block
-patchblock:id=64,id=71,data=3,data=7,data=11,data=15,patch0=DoorFront@180,patch1=DoorBack@180,patch2=DoorLeft@180,patch3=DoorRight@180,patch4=DoorTop@180,patch5=DoorBottom@180
+# Wooden/Iron Door
+customblock:id=64,id=71,data=*,class=org.dynmap.hdmap.renderer.DoorRenderer
+
 # Wall lever, facing south
 patchblock:id=69,data=1,patch0=WLeverBase1@270,patch1=WLeverBase2@270,patch2=WLeverBase3@270,patch3=WLeverBase4@270,patch4=WLeverBase5@270,patch5=WLeverSide1@270,patch6=WLeverSide2@270,patch7=WLeverSide3@270,patch8=WLeverSide4@270
 patchblock:id=69,data=9,patch0=WLeverBase1@270,patch1=WLeverBase2@270,patch2=WLeverBase3@270,patch3=WLeverBase4@270,patch4=WLeverBase5@270,patch5=WLeverSide1@0/90/180,patch6=WLeverSide2@0/90/180,patch7=WLeverSide3@0/90/180,patch8=WLeverSide4@0/90/180
@@ -730,54 +682,9 @@ rotate:id=34,data=2,rot=270
 # Piston extension - extended facing west
 block:id=34,data=5,data=13,scale=8
 rotate:id=34,data=2,rot=90
-# Glass pane - render alg
-# Iron fence - render alg
-linkmap:id=101,id=102,linkalg=4
-# Glass pane - no adjacent (0), all adjacent (15)
-# Iron fence - no adjacent (0), all adjacent (15)
-patchblock:id=102,id=101,data=0,data=15,patch0=VertX05,patch1=VertX05@90,patch2=HorizY100ZTopStrip,patch3=HorizY100ZTopStrip@90
-# Glass pane - N adjacent (1)
-# Iron fence - N adjacent (1)
-patchblock:id=102,id=101,data=1,patch0=VertX05Left@90,patch1=HorizY100ZTopStripTop@90,patch2=VertX05Strip
-# Glass pane - E adjacent (2)
-# Iron fence - E adjacent (2)
-patchblock:id=102,id=101,data=2,patch0=VertX05Left@180,patch1=HorizY100ZTopStripTop@180,patch2=VertX05Strip@90
-# Glass pane - S adjacent (4)
-# Iron fence - S adjacent (4)
-patchblock:id=102,id=101,data=4,patch0=VertX05Left@270,patch1=HorizY100ZTopStripTop@270,patch2=VertX05Strip@180
-# Glass pane - W adjacent (8)
-# Iron fence - W adjacent (8)
-patchblock:id=102,id=101,data=8,patch0=VertX05Left,patch1=HorizY100ZTopStripTop,patch2=VertX05Strip@270
-# Glass pane - NS adjacent (5)
-# Iron fence - NS adjacent (5)
-patchblock:id=102,id=101,data=5,patch0=VertX05@90,patch1=HorizY100ZTopStrip@90
-# Glass pane - EW adjacent (10)
-# Iron fence - EW adjacent (10)
-patchblock:id=102,id=101,data=10,patch0=VertX05,patch1=HorizY100ZTopStrip
-# Glass pane - NSE adjacent (7)
-# Iron fence - NSE adjacent (7)
-patchblock:id=102,id=101,data=7,patch0=VertX05@90,patch1=HorizY100ZTopStrip@90,patch2=VertX05Left@180,patch3=HorizY100ZTopStripTop@180
-# Glass pane - ESW adjacent (14)
-# Iron fence - ESW adjacent (14)
-patchblock:id=102,id=101,data=14,patch0=VertX05@180,patch1=HorizY100ZTopStrip@180,patch2=VertX05Left@270,patch3=HorizY100ZTopStripTop@270
-# Glass pane - SWN adjacent (13)
-# Iron fence - SWN adjacent (13)
-patchblock:id=102,id=101,data=13,patch0=VertX05@270,patch1=HorizY100ZTopStrip@270,patch2=VertX05Left,patch3=HorizY100ZTopStripTop
-# Glass pane - WNE adjacent (11)
-# Iron fence - WNE adjacent (11)
-patchblock:id=102,id=101,data=11,patch0=VertX05,patch1=HorizY100ZTopStrip,patch2=VertX05Left@90,patch3=HorizY100ZTopStripTop@90
-# Glass pane - SE adjacent (6)
-# Iron fence - SE adjacent (6)
-patchblock:id=102,id=101,data=6,patch0=VertX05Left@180,patch1=HorizY100ZTopStripTop@180,patch2=VertX05Left@270,patch3=HorizY100ZTopStripTop@270
-# Glass pane - SW adjacent (12)
-# Iron fence - SW adjacent (12)
-patchblock:id=102,id=101,data=12,patch0=VertX05Left@270,patch1=HorizY100ZTopStripTop@270,patch2=VertX05Left,patch3=HorizY100ZTopStripTop
-# Glass pane - NW adjacent (9)
-# Iron fence - NW adjacent (9)
-patchblock:id=102,id=101,data=9,patch0=VertX05Left,patch1=HorizY100ZTopStripTop,patch2=VertX05Left@90,patch3=HorizY100ZTopStripTop@90
-# Glass pane - NE adjacent (3)
-# Iron fence - NE adjacent (3)
-patchblock:id=102,id=101,data=3,patch0=VertX05Left@90,patch1=HorizY100ZTopStripTop@90,patch2=VertX05Left@180,patch3=HorizY100ZTopStripTop@180
+# Glass pane
+# Iron fence
+customblock:id=102,id=101,data=*,class=org.dynmap.hdmap.renderer.PaneRenderer
 # Web
 # Nether Wart
 # Rose
@@ -820,124 +727,8 @@ patchblock:id=106,data=13,patch0=VertX0In@270,patch1=VertX0In@90,patch2=VertX0In
 patchblock:id=106,data=11,patch0=VertX0In,patch1=VertX0In@180,patch2=VertX0In@270
 # Vines - N+S+E+W sides of block
 patchblock:id=106,data=15,patch0=VertX0In@270,patch1=VertX0In@90,patch2=VertX0In@180,patch3=VertX0In
-# Fence gate - closed - northsouth
-block:id=107,data=0,data=2,scale=16
-layer:6,7,8,12,13,14
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
--------**-------
-layer:5,15
--------**-------
--------**-------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
--------**-------
--------**-------
-layer:9,10,11
--------**-------
--------**-------
-----------------
-----------------
-----------------
-----------------
--------**-------
--------**-------
--------**-------
--------**-------
-----------------
-----------------
-----------------
-----------------
--------**-------
--------**-------
-# Fence gate - closed - east/west
-block:id=107,data=1,data=3,scale=16
-rotate:id=107,data=0,rot=90
-# Fence gate - open to west
-block:id=107,data=4,scale=16
-layer:6,7,8,12,13,14
--********-------
--********-------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-layer:5,15
--------**-------
--------**-------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
--------**-------
--------**-------
-layer:9,10,11
--**----**-------
--**----**-------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
-----------------
--**----**-------
--**----**-------
-# Fence gate - open to north
-block:id=107,data=5,scale=16
-rotate:id=107,data=4,rot=90
-# Fence gate - open to east
-block:id=107,data=6,scale=16
-rotate:id=107,data=4,rot=180
-# Fence gate - open to south
-block:id=107,data=7,scale=16
-rotate:id=107,data=4,rot=270
+# Fence gate
+customblock:id=107,data=*,class=org.dynmap.hdmap.renderer.FenceGateBlockRenderer
 # Pumpkin stem
 # Mellon stem
 block:id=104,id=105,data=*,scale=16

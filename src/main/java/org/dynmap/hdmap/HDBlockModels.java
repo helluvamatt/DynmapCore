@@ -8,20 +8,29 @@ import java.io.InputStreamReader;
 import java.io.LineNumberReader;
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipException;
+import java.util.zip.ZipFile;
 
 import org.dynmap.ConfigurationNode;
 import org.dynmap.DynmapCore;
 import org.dynmap.Log;
 import org.dynmap.MapManager;
 import org.dynmap.debug.Debug;
+import org.dynmap.hdmap.TexturePack.BlockTransparency;
+import org.dynmap.hdmap.TexturePack.HDTextureMap;
 import org.dynmap.renderer.CustomRenderer;
 import org.dynmap.renderer.MapDataContext;
 import org.dynmap.renderer.RenderPatch;
 import org.dynmap.renderer.RenderPatchFactory.SideVisible;
+import org.dynmap.utils.BlockStep;
 import org.dynmap.utils.ForgeConfigFile;
+import org.dynmap.utils.MapIterator;
 import org.dynmap.utils.PatchDefinition;
 import org.dynmap.utils.PatchDefinitionFactory;
 
@@ -38,6 +47,22 @@ public class HDBlockModels {
     private static PatchDefinitionFactory pdf = new PatchDefinitionFactory();
     private static BitSet customModelsRequestingTileData = new BitSet(); // Index by 16*id + data
     private static BitSet changeIgnoredBlocks = new BitSet();   // Index by 16*id + data
+    private static HashSet<String> loadedmods = new HashSet<String>();
+
+    // special render data algorithms
+    private static final int FENCE_ALGORITHM = 1;
+    private static final int CHEST_ALGORITHM = 2;
+    private static final int REDSTONE_ALGORITHM = 3;
+    private static final int GLASS_IRONFENCE_ALG = 4;
+    private static final int WIRE_ALGORITHM = 5;
+    private static final int DOOR_ALGORITHM = 6;
+
+    private static final int REDSTONE_BLKTYPEID = 55;
+    private static final int FENCEGATE_BLKTYPEID = 107;
+    
+    private enum ChestData {
+        SINGLE_WEST, SINGLE_SOUTH, SINGLE_EAST, SINGLE_NORTH, LEFT_WEST, LEFT_SOUTH, LEFT_EAST, LEFT_NORTH, RIGHT_WEST, RIGHT_SOUTH, RIGHT_EAST, RIGHT_NORTH
+    };
 
     public static final int getMaxPatchCount() { return max_patches; }
     public static final PatchDefinitionFactory getPatchDefinitionFactory() { return pdf; }
@@ -248,12 +273,22 @@ public class HDBlockModels {
         }
         /**
          * Test if given native block is filled (for volumetric model)
+         * 
+         * @param x - X coordinate
+         * @param y - Y coordinate
+         * @param z - Z coordinate
+         * @return true if set, false if not
          */
         public final boolean isSubblockSet(int x, int y, int z) {
             return ((blockflags[nativeres*y+z] & (1 << x)) != 0);
         }
         /**
          * Set subblock value (for volumetric model)
+         * 
+         * @param x - X coordinate
+         * @param y - Y coordinate
+         * @param z - Z coordinate
+         * @param isset - true = set, false = clear
          */
         public final void setSubblock(int x, int y, int z, boolean isset) {
             if(isset)
@@ -415,13 +450,14 @@ public class HDBlockModels {
             this.patches = patches;
             int max = 0;
             for(int i = 0; i < patches.length; i++) {
-                if(patches[i].textureindex > max)
+                if((patches[i] != null) && (patches[i].textureindex > max))
                     max = patches[i].textureindex;
             }
             this.max_texture = max + 1;
         }
         /**
          * Get patches for block model (if patch model)
+         * @return patches for model
          */
         public final PatchDefinition[] getPatches() {
             return patches;
@@ -467,8 +503,8 @@ public class HDBlockModels {
     }
     /**
      * Get scaled set of models for all modelled blocks 
-     * @param scale
-     * @return
+     * @param scale - scale
+     * @return scaled models
      */
     public static HDScaledBlockModels   getModelsForScale(int scale) {
         HDScaledBlockModels model = scaled_models_by_scale.get(Integer.valueOf(scale));
@@ -547,8 +583,17 @@ public class HDBlockModels {
             }
         }
     }
+    public static String getModIDFromFileName(String fn) {
+        int off = fn.lastIndexOf('/');
+        if (off > 0) fn = fn.substring(off+1);
+        off = fn.lastIndexOf('-');
+        if (off > 0) fn = fn.substring(0, off);
+        return fn;
+    }
     /**
      * Load models 
+     * @param core - core object
+     * @param config - model configuration data
      */
     public static void loadModels(DynmapCore core, ConfigurationNode config) {
         File datadir = core.getDataFolder();
@@ -559,11 +604,14 @@ public class HDBlockModels {
         scaled_models_by_scale.clear();
         /* Reset change-ignored flags */
         changeIgnoredBlocks.clear();
+        /* Reset model list */
+        loadedmods.clear();
         
         /* Load block models */
         int i = 0;
         boolean done = false;
         InputStream in = null;
+        ZipFile zf;
         while (!done) {
             in = TexturePack.class.getResourceAsStream("/models_" + i + ".txt");
             if(in != null) {
@@ -575,6 +623,36 @@ public class HDBlockModels {
             }
             i++;
         }
+        /* Check mods to see if model files defined there: do these first, as they trump other sources */
+        for (String modid : core.getServer().getModList()) {
+            File f = core.getServer().getModContainerFile(modid);   // Get mod file
+            if (f.isFile()) {
+                zf = null;
+                in = null;
+                try {
+                    zf = new ZipFile(f);
+                    String fn = "assets/" + modid.toLowerCase() + "/dynmap-models.txt";
+                    ZipEntry ze = zf.getEntry(fn);
+                    if (ze != null) {
+                        in = zf.getInputStream(ze);
+                        loadModelFile(in, fn, config, core, modid);
+                        loadedmods.add(modid);  // Add to set: prevent others definitions for same mod
+                    }
+                } catch (ZipException e) {
+                } catch (IOException e) {
+                } finally {
+                    if (in != null) {
+                        try { in.close(); } catch (IOException e) { }
+                        in = null;
+                    }
+                    if (zf != null) {
+                        try { zf.close(); } catch (IOException e) { }
+                        zf = null;
+                    }
+                }
+            }
+        }
+        // Load external model files (these go before internal versions, to allow external overrides)
         ArrayList<String> files = new ArrayList<String>();
         File customdir = new File(datadir, "renderdata");
         addFiles(files, customdir, "");
@@ -582,8 +660,8 @@ public class HDBlockModels {
             File custom = new File(customdir, fn);
             if(custom.canRead()) {
                 try {
-                in = new FileInputStream(custom);
-                    loadModelFile(in, custom.getPath(), config, core, fn.substring(0, fn.indexOf("-models.txt")));
+                    in = new FileInputStream(custom);
+                    loadModelFile(in, custom.getPath(), config, core, getModIDFromFileName(fn));
                 } catch (IOException iox) {
                     Log.severe("Error loading " + custom.getPath());
                 } finally {
@@ -594,9 +672,38 @@ public class HDBlockModels {
                 }
             }
         }
+        // Load internal texture files (these go last, to allow other versions to replace them)
+        zf = null;
+        try {
+            zf = new ZipFile(core.getPluginJarFile());
+            Enumeration<? extends ZipEntry> e = zf.entries();
+            while (e.hasMoreElements()) {
+                ZipEntry ze = e.nextElement();
+                String n = ze.getName();
+                if (!n.startsWith("renderdata/")) continue;
+                if (!n.endsWith("-models.txt")) continue;
+                in = zf.getInputStream(ze);
+                if (in != null) {
+                    loadModelFile(in, n, config, core, getModIDFromFileName(n));
+                    try { in.close(); } catch (IOException x) { in = null; }
+                }
+            }
+        } catch (IOException iox) {
+            Log.severe("Error processing nodel files");
+        } finally {
+            if (in != null) {
+                try { in.close(); } catch (IOException iox) {}
+                in = null;
+            }
+            if (zf != null) {
+                try { zf.close(); } catch (IOException iox) {}
+                zf = null;
+            }
+        }
     }
     private static Integer getIntValue(Map<String,Integer> vars, String val) throws NumberFormatException {
-        if(Character.isLetter(val.charAt(0))) {
+        char c = val.charAt(0);
+        if(Character.isLetter(c) || (c == '%') || (c == '&')) {
             int off = val.indexOf('+');
             int offset = 0;
             if (off > 0) {
@@ -604,8 +711,15 @@ public class HDBlockModels {
                 val = val.substring(0,  off);
             }
             Integer v = vars.get(val);
-            if(v == null)
-                throw new NumberFormatException("invalid ID - " + val);
+            if(v == null) {
+                if ((c == '%') || (c == '&')) { // block/item unique IDs
+                    vars.put(val, 0);
+                    v = 0;
+                }
+                else {
+                    throw new NumberFormatException("invalid ID - " + val);
+                }
+            }
             if((offset != 0) && (v.intValue() > 0))
                 v = v.intValue() + offset;
             return v;
@@ -616,7 +730,7 @@ public class HDBlockModels {
     }
     
     // Patch index ordering, corresponding to BlockStep ordinal order
-    private static final int boxPatchList[] = { 1, 4, 2, 5, 0, 3 };
+    public static final int boxPatchList[] = { 1, 4, 0, 3, 2, 5 };
 
     /**
      * Load models from file
@@ -626,7 +740,10 @@ public class HDBlockModels {
         LineNumberReader rdr = null;
         int cnt = 0;
         boolean need_mod_cfg = false;
+        boolean mod_cfg_loaded = false;
         String modname = null;
+        String modversion = null;
+        final String mcver = core.getDynmapPluginPlatformVersion();
         try {
             String line;
             ArrayList<HDBlockVolumetricModel> modlist = new ArrayList<HDBlockVolumetricModel>();
@@ -639,7 +756,29 @@ public class HDBlockModels {
             int scale = 0;
             rdr = new LineNumberReader(new InputStreamReader(in));
             while((line = rdr.readLine()) != null) {
-                if(line.startsWith("block:")) {
+                boolean skip = false;
+                if ((line.length() > 0) && (line.charAt(0) == '[')) {    // If version constrained like
+                    int end = line.indexOf(']');    // Find end
+                    if (end < 0) {
+                        Log.severe("Format error - line " + rdr.getLineNumber() + " of " + fname + ": bad version limit");
+                        return;
+                    }
+                    String vertst = line.substring(1, end);
+                    String tver = mcver;
+                    if (vertst.startsWith("mod:")) {    // If mod version ranged
+                        tver = modversion;
+                        vertst = vertst.substring(4);
+                    }
+                    if (!HDBlockModels.checkVersionRange(tver, vertst)) {
+                        skip = true;
+                    }
+                    line = line.substring(end+1);
+                }
+                // If we're skipping due to version restriction
+                if (skip) {
+                    
+                }
+                else if(line.startsWith("block:")) {
                     ArrayList<Integer> blkids = new ArrayList<Integer>();
                     int databits = 0;
                     scale = 0;
@@ -883,9 +1022,13 @@ public class HDBlockModels {
                 else if(line.startsWith("cfgfile:")) { /* If config file */
                     File cfgfile = new File(line.substring(8).trim());
                     ForgeConfigFile cfg = new ForgeConfigFile(cfgfile);
+                    if (!mod_cfg_loaded) {
+                        need_mod_cfg = true;
+                    }
                     if(cfg.load()) {
                         cfg.addBlockIDs(varvals);
                         need_mod_cfg = false;
+                        mod_cfg_loaded = true;
                     }
                 }
                 else if(line.startsWith("patch:")) {
@@ -1159,12 +1302,18 @@ public class HDBlockModels {
                             rng = ntok[1].trim();
                         }
                         n = n.trim();
+                        if (loadedmods.contains(n)) {   // Already supplied by mod itself?
+                            return;
+                        }
                         String modver = core.getServer().getModVersion(n);
                         if((modver != null) && ((rng == null) || checkVersionRange(modver, rng))) {
                             found = true;
                             Log.info(n + "[" + modver + "] models enabled");
-                            need_mod_cfg = true;
                             modname = n;
+                            modversion = modver;
+                            loadedmods.add(n);  // Add to loaded mods
+                            // Prime values from block and item unique IDs
+                            core.addModBlockItemIDs(modname, varvals);
                             break;
                         }
                     }
@@ -1174,22 +1323,8 @@ public class HDBlockModels {
                 }
                 else if(line.startsWith("version:")) {
                     line = line.substring(line.indexOf(':')+1);
-                    String mcver = core.getDynmapPluginPlatformVersion();
-                    int dash = line.indexOf('-');
-                    if(dash < 0) {
-                        if(!mcver.equals(line.trim())) { // If not match
-                            return;
-                        }
-                    }
-                    else {
-                        String s1 = line.substring(0, dash).trim();
-                        String s2 = line.substring(dash+1).trim();
-                        if( (s1.equals("") || (s1.compareTo(mcver) <= 0)) &&
-                                (s2.equals("") || (s2.compareTo(mcver) >= 0))) {
-                        }
-                        else {
-                            return;
-                        }
+                    if (!checkVersionRange(mcver, line)) {
+                        return;
                     }
                 }
                 else if(layerbits != 0) {   /* If we're working pattern lines */
@@ -1233,11 +1368,31 @@ public class HDBlockModels {
             pdf.setPatchNameMape(null);
         }
     }
-    private static int vscale[] = { 1000000, 10000, 100, 1 };
+    private static long vscale[] = { 10000000000L, 100000000, 1000000, 10000, 100, 1 };
+
+    private static String normalizeVersion(String v) {
+        StringBuilder v2 = new StringBuilder();
+        boolean skip = false;
+        for (int i = 0; i < v.length(); i++) {
+            char c = v.charAt(i);
+            if ((c == '.') || ((c >= '0') && (c <= '9'))) {
+                v2.append(c);
+                skip = false;
+            }
+            else {
+                if (!skip) {
+                    skip = true;
+                    v2.append('.');
+                }
+            }
+        }
+        return v2.toString();
+    }
     
-    private static int parseVersion(String v, boolean up) {
+    private static long parseVersion(String v, boolean up) {
+        v = normalizeVersion(v);
         String[] vv = v.split("\\.");
-        int ver = 0;
+        long ver = 0;
         for (int i = 0; i < vscale.length; i++) {
             if (i < vv.length){ 
                 try {
@@ -1259,7 +1414,7 @@ public class HDBlockModels {
         String low;
         String high;
         
-        int v = parseVersion(ver, false);
+        long v = parseVersion(ver, false);
         if (v == 0) return false;
         
         if (rng.length == 1) {
@@ -1277,5 +1432,297 @@ public class HDBlockModels {
             return false;
         }
         return true;
+    }
+    /**
+     * Get render data for block
+     * @param blocktypeid - block ID
+     * @param map - map iterator
+     * @return render data, or -1 if none
+     */
+    public static int getBlockRenderData(int blocktypeid, MapIterator map) {
+        int blockrenderdata = -1;
+        switch(HDBlockModels.getLinkAlgID(blocktypeid)) {
+            case FENCE_ALGORITHM:   /* Fence algorithm */
+                blockrenderdata = generateFenceBlockData(blocktypeid, map);
+                break;
+            case CHEST_ALGORITHM:
+                blockrenderdata = generateChestBlockData(blocktypeid, map);
+                break;
+            case REDSTONE_ALGORITHM:
+                blockrenderdata = generateRedstoneWireBlockData(map);
+                break;
+            case GLASS_IRONFENCE_ALG:
+                blockrenderdata = generateIronFenceGlassBlockData(blocktypeid, map);
+                break;
+            case WIRE_ALGORITHM:
+                blockrenderdata = generateWireBlockData(HDBlockModels.getLinkIDs(blocktypeid), map);
+                break;
+            case DOOR_ALGORITHM:
+                blockrenderdata = generateDoorBlockData(blocktypeid, map);
+                break;
+        }
+        return blockrenderdata;
+    }
+    private static int generateFenceBlockData(int blkid, MapIterator mapiter) {
+        int blockdata = 0;
+        int id;
+        /* Check north */
+        id = mapiter.getBlockTypeIDAt(BlockStep.X_MINUS);
+        if((id == blkid) || (id == FENCEGATE_BLKTYPEID) || 
+                ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {    /* Fence? */
+            blockdata |= 1;
+        }
+        /* Look east */
+        id = mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS);
+        if((id == blkid) || (id == FENCEGATE_BLKTYPEID) ||
+                ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {    /* Fence? */
+            blockdata |= 2;
+        }
+        /* Look south */
+        id = mapiter.getBlockTypeIDAt(BlockStep.X_PLUS);
+        if((id == blkid) || (id == FENCEGATE_BLKTYPEID) ||
+                ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {    /* Fence? */
+            blockdata |= 4;
+        }
+        /* Look west */
+        id = mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS);
+        if((id == blkid) || (id == FENCEGATE_BLKTYPEID) ||
+                ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {    /* Fence? */
+            blockdata |= 8;
+        }
+        return blockdata;
+    }
+    /**
+     * Generate chest block to drive model selection:
+     *   0 = single facing west
+     *   1 = single facing south
+     *   2 = single facing east
+     *   3 = single facing north
+     *   4 = left side facing west
+     *   5 = left side facing south
+     *   6 = left side facing east
+     *   7 = left side facing north
+     *   8 = right side facing west
+     *   9 = right side facing south
+     *   10 = right side facing east
+     *   11 = right side facing north
+     * @return
+     */
+    private static int generateChestBlockData(int blktype, MapIterator mapiter) {
+        int blkdata = mapiter.getBlockData();   /* Get block data */
+        ChestData cd = ChestData.SINGLE_WEST;   /* Default to single facing west */
+        switch(blkdata) {   /* First, use orientation data */
+            case 2: /* East (now north) */
+                if(mapiter.getBlockTypeIDAt(BlockStep.X_MINUS) == blktype) { /* Check north */
+                    cd = ChestData.LEFT_EAST;
+                }
+                else if(mapiter.getBlockTypeIDAt(BlockStep.X_PLUS) == blktype) {    /* Check south */
+                    cd = ChestData.RIGHT_EAST;
+                }
+                else {
+                    cd = ChestData.SINGLE_EAST;
+                }
+                break;
+            case 4: /* North */
+                if(mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS) == blktype) { /* Check east */
+                    cd = ChestData.RIGHT_NORTH;
+                }
+                else if(mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS) == blktype) {    /* Check west */
+                    cd = ChestData.LEFT_NORTH;
+                }
+                else {
+                    cd = ChestData.SINGLE_NORTH;
+                }
+                break;
+            case 5: /* South */
+                if(mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS) == blktype) { /* Check east */
+                    cd = ChestData.LEFT_SOUTH;
+                }
+                else if(mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS) == blktype) {    /* Check west */
+                    cd = ChestData.RIGHT_SOUTH;
+                }
+                else {
+                    cd = ChestData.SINGLE_SOUTH;
+                }
+                break;
+            case 3: /* West */
+            default:
+                if(mapiter.getBlockTypeIDAt(BlockStep.X_MINUS) == blktype) { /* Check north */
+                    cd = ChestData.RIGHT_WEST;
+                }
+                else if(mapiter.getBlockTypeIDAt(BlockStep.X_PLUS) == blktype) {    /* Check south */
+                    cd = ChestData.LEFT_WEST;
+                }
+                else {
+                    cd = ChestData.SINGLE_WEST;
+                }
+                break;
+        }
+        return cd.ordinal();
+    }
+    /**
+     * Generate redstone wire model data:
+     *   0 = NSEW wire
+     *   1 = NS wire
+     *   2 = EW wire
+     *   3 = NE wire
+     *   4 = NW wire
+     *   5 = SE wire
+     *   6 = SW wire
+     *   7 = NSE wire
+     *   8 = NSW wire
+     *   9 = NEW wire
+     *   10 = SEW wire
+     *   11 = none
+     * @return
+     */
+    private static int generateRedstoneWireBlockData(MapIterator mapiter) {
+        /* Check adjacent block IDs */
+        int ids[] = { mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS),  /* To west */
+            mapiter.getBlockTypeIDAt(BlockStep.X_PLUS),            /* To south */
+            mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS),           /* To east */
+            mapiter.getBlockTypeIDAt(BlockStep.X_MINUS) };         /* To north */
+        int flags = 0;
+        for(int i = 0; i < 4; i++)
+            if(ids[i] == REDSTONE_BLKTYPEID)
+                flags |= (1<<i);
+        switch(flags) {
+            case 0: /* Nothing nearby */
+                return 11;
+            case 15: /* NSEW */
+                return 0;   /* NSEW graphic */
+            case 2: /* S */
+            case 8: /* N */
+            case 10: /* NS */
+                return 1;   /* NS graphic */
+            case 1: /* W */
+            case 4: /* E */
+            case 5: /* EW */
+                return 2;   /* EW graphic */
+            case 12: /* NE */
+                return 3;
+            case 9: /* NW */
+                return 4;
+            case 6: /* SE */
+                return 5;
+            case 3: /* SW */
+                return 6;
+            case 14: /* NSE */
+                return 7;
+            case 11: /* NSW */
+                return 8;
+            case 13: /* NEW */
+                return 9;
+            case 7: /* SEW */
+                return 10;
+        }
+        return 0;
+    }
+    /**
+     * Generate block render data for glass pane and iron fence.
+     *  - bit 0 = X-minus axis
+     *  - bit 1 = Z-minus axis
+     *  - bit 2 = X-plus axis
+     *  - bit 3 = Z-plus axis
+     *  
+     * @param typeid - ID of our material (test is for adjacent material OR nontransparent)
+     * @return
+     */
+    private static int generateIronFenceGlassBlockData(int typeid, MapIterator mapiter) {
+        int blockdata = 0;
+        int id;
+        /* Check north */
+        id = mapiter.getBlockTypeIDAt(BlockStep.X_MINUS);
+        if((id == typeid) || ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {
+            blockdata |= 1;
+        }
+        /* Look east */
+        id = mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS);
+        if((id == typeid) || ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {
+            blockdata |= 2;
+        }
+        /* Look south */
+        id = mapiter.getBlockTypeIDAt(BlockStep.X_PLUS);
+        if((id == typeid) || ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {
+            blockdata |= 4;
+        }
+        /* Look west */
+        id = mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS);
+        if((id == typeid) || ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {
+            blockdata |= 8;
+        }
+        return blockdata;
+    }
+    /**
+     * Generate render data for doors
+     *  - bit 3 = top half (1) or bottom half (0)
+     *  - bit 2 = right hinge (0), left hinge (1)
+     *  - bit 1,0 = 00=west,01=north,10=east,11=south
+     * @param typeid - ID of our material
+     * @return
+     */
+    private static int generateDoorBlockData(int typeid, MapIterator mapiter) {
+        int blockdata = 0;
+        int topdata = mapiter.getBlockData();   /* Get block data */
+        int bottomdata = 0;
+        if((topdata & 0x08) != 0) { /* We're door top */
+            blockdata |= 0x08;  /* Set top bit */
+            mapiter.stepPosition(BlockStep.Y_MINUS);
+            bottomdata = mapiter.getBlockData();
+            mapiter.unstepPosition(BlockStep.Y_MINUS);
+        }
+        else {  /* Else, we're bottom */
+            bottomdata = topdata;
+            mapiter.stepPosition(BlockStep.Y_PLUS);
+            topdata = mapiter.getBlockData();
+            mapiter.unstepPosition(BlockStep.Y_PLUS);
+        }
+        boolean onright = false;
+        if((topdata & 0x01) == 1) { /* Right hinge */
+            blockdata |= 0x4; /* Set hinge bit */
+            onright = true;
+        }
+        blockdata |= (bottomdata & 0x3);    /* Set side bits */
+        /* If open, rotate data appropriately */
+        if((bottomdata & 0x4) > 0) {
+            if(onright) {   /* Hinge on right? */
+                blockdata = (blockdata & 0x8) | 0x0 | ((blockdata-1) & 0x3);
+            }
+            else {
+                blockdata = (blockdata & 0x8) | 0x4 | ((blockdata+1) & 0x3);
+            }
+        }
+        return blockdata;
+    }
+    private static boolean containsID(int id, int[] linkids) {
+        for(int i = 0; i < linkids.length; i++)
+            if(id == linkids[i])
+                return true;
+        return false;
+    }
+    private static int generateWireBlockData(int[] linkids, MapIterator mapiter) {
+        int blockdata = 0;
+        int id;
+        /* Check north */
+        id = mapiter.getBlockTypeIDAt(BlockStep.X_MINUS);
+        if(containsID(id, linkids)) {
+            blockdata |= 1;
+        }
+        /* Look east */
+        id = mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS);
+        if(containsID(id, linkids)) {
+            blockdata |= 2;
+        }
+        /* Look south */
+        id = mapiter.getBlockTypeIDAt(BlockStep.X_PLUS);
+        if(containsID(id, linkids)) {
+            blockdata |= 4;
+        }
+        /* Look west */
+        id = mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS);
+        if(containsID(id, linkids)) {
+            blockdata |= 8;
+        }
+        return blockdata;
     }
 }

@@ -25,6 +25,11 @@ shaders:
     name: sk89q
     colorscheme: sk89q
    
+  - class: org.dynmap.hdmap.DefaultHDShader
+    name: amidst
+    biomecolored: biome
+    colorscheme: amidst
+
   # Biome based shaders
   - class: org.dynmap.hdmap.DefaultHDShader
     name: biome
@@ -167,3 +172,12 @@ shaders:
     watercolor: "#1F1FEA"
     wateralpha: 1.0
     
+  # Inhabited time map shader    
+  - class: org.dynmap.hdmap.InhabitedHDShader
+    name: inhabited
+    color10: "#0000FF"
+    color30: "#00FFFF"
+    color100: "#008000"
+    color300: "#FFFF00"
+    color1000: "#FF8000"
+    color3000: "#FF0000"

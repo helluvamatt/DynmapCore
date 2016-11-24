@@ -3,7 +3,9 @@ package org.dynmap;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 import org.dynmap.common.DynmapCommandSender;
 import org.dynmap.common.DynmapPlayer;
@@ -11,8 +13,6 @@ import org.dynmap.hdmap.HDLighting;
 import org.dynmap.hdmap.HDMap;
 import org.dynmap.hdmap.HDPerspective;
 import org.dynmap.hdmap.HDShader;
-import org.dynmap.kzedmap.KzedMap;
-import org.dynmap.kzedmap.MapTileRenderer;
 
 /**
  * Handler for world and map edit commands (via /dmap)
@@ -49,6 +49,9 @@ public class DynmapMapCommands {
         }
         else if(cmd.equalsIgnoreCase("maplist")) {
             rslt = handleMapList(sender, args, core);
+        }
+        else if(cmd.equalsIgnoreCase("blocklist")) {
+            rslt = handleBlockList(sender, args, core);
         }
         /* Other commands are edits - must be paused to run these */
         else if(checkIfActive(core, sender)) {
@@ -243,7 +246,7 @@ public class DynmapMapCommands {
             }
             else if(tok[0].equalsIgnoreCase("order")) {
                 if(w == null) {
-                    sender.sendMessage("Cannot set center on disabled or undefined world");
+                    sender.sendMessage("Cannot set order on disabled or undefined world");
                     return true;
                 }
                 int order = -1;
@@ -287,7 +290,7 @@ public class DynmapMapCommands {
                 StringBuilder sb = new StringBuilder();
                 sb.append("map ").append(mt.getName()).append(": prefix=").append(hdmt.getPrefix()).append(", title=").append(hdmt.getTitle());
                 sb.append(", perspective=").append(hdmt.getPerspective().getName()).append(", shader=").append(hdmt.getShader().getName());
-                sb.append(", lighting=").append(hdmt.getLighting().getName()).append(", mapzoomin=").append(hdmt.getMapZoomIn());
+                sb.append(", lighting=").append(hdmt.getLighting().getName()).append(", mapzoomin=").append(hdmt.getMapZoomIn()).append(", mapzoomout=").append(hdmt.getMapZoomOutLevels());
                 sb.append(", img-format=").append(hdmt.getImageFormatSetting()).append(", icon=").append(hdmt.getIcon());
                 sb.append(", append-to-world=").append(hdmt.getAppendToWorld()).append(", boostzoom=").append(hdmt.getBoostZoom());
                 sb.append(", protected=").append(hdmt.isProtected());
@@ -326,30 +329,7 @@ public class DynmapMapCommands {
             boolean done = false;
             for(int idx = 0; (!done) && (idx < maps.size()); idx++) {
                 MapType mt = maps.get(idx);
-                if(mt instanceof KzedMap) {
-                    KzedMap km = (KzedMap)mt;
-                    MapTileRenderer[] rnd = km.renderers;
-                    for(int ridx = 0; (!done) && (ridx < rnd.length); ridx++) {
-                        if(rnd[ridx].getName().equals(mname)) {
-                            /* If last one, delete whole map */
-                            if(rnd.length == 1) {
-                                w.maps.remove(mt);
-                            }
-                            else {  /* Remove from list */
-                                MapTileRenderer[] newrnd = new MapTileRenderer[rnd.length-1];
-                                for(int k = 0; k < ridx; k++) {
-                                    newrnd[k] = rnd[k];
-                                }
-                                for(int k = ridx; k < newrnd.length - 1; k++) {
-                                    newrnd[k] = rnd[k+1];
-                                }
-                                km.renderers = newrnd;
-                            }
-                            done = true;
-                        }
-                    }
-                }
-                else if(mt.getName().equals(mname)) {
+                if(mt.getName().equals(mname)) {
                     w.maps.remove(mt);
                     done = true;
                 }
@@ -498,6 +478,18 @@ public class DynmapMapCommands {
                 }
                 did_update |= mt.setMapZoomIn(mzi);
             }
+            else if(tok[0].equalsIgnoreCase("mapzoomout")) {
+                int mzi = -1;
+                try {
+                    mzi = Integer.valueOf(tok[1]);
+                } catch (NumberFormatException nfx) {
+                }
+                if((mzi < 0) || (mzi > 32)) {
+                    sender.sendMessage("Invalid mapzoomout value: " + tok[1]);
+                    return true;
+                }
+                did_update |= mt.setMapZoomOut(mzi);
+            }
             else if(tok[0].equalsIgnoreCase("boostzoom")) {
                 int mzi = -1;
                 try {
@@ -630,4 +622,14 @@ public class DynmapMapCommands {
         return true;
     }
 
+    private boolean handleBlockList(DynmapCommandSender sender, String[] args, DynmapCore core) {
+        if(!core.checkPlayerPermission(sender, "dmap.blklist"))
+            return true;
+        Map<String, Integer> map = core.getServer().getBlockUniqueIDMap();
+        TreeSet<String> keys = new TreeSet<String>(map.keySet());
+        for (String k : keys) {
+            sender.sendMessage(k + ": " + map.get(k));
+        }
+        return true;
+    }
 }

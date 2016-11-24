@@ -28,6 +28,7 @@ import org.dynmap.DynmapCore.CompassMode;
 import org.dynmap.common.DynmapCommandSender;
 import org.dynmap.common.DynmapPlayer;
 import org.dynmap.debug.Debug;
+import org.dynmap.exporter.OBJExport;
 import org.dynmap.hdmap.HDMapManager;
 import org.dynmap.utils.MapChunkCache;
 import org.dynmap.utils.TileFlags;
@@ -46,12 +47,14 @@ public class MapManager {
     private int parallelrendercnt = 0;
     private int progressinterval = 100;
     private int tileupdatedelay = 30;
+    private int savependingperiod = 15 * 60; // every 15 minutes, by default
     private boolean saverestorepending = true;
+    private boolean pauseupdaterenders = false;
     private boolean hideores = false;
+    private boolean useBrightnessTable = false;
     private boolean usenormalpriority = false;
     private short blockidalias[];
     
-    private boolean pauseupdaterenders = false;
     private boolean pausefullrenders = false;
 
     // TPS based render pauses
@@ -70,16 +73,9 @@ public class MapManager {
 
     /* Chunk load performance numbers */
     AtomicInteger chunk_caches_created = new AtomicInteger(0);
-    AtomicInteger chunk_caches_attempted = new AtomicInteger(0);
-    AtomicLong total_chunk_cache_loadtime_ns = new AtomicLong(0);
-    AtomicInteger chunks_read = new AtomicInteger(0);;
-    AtomicInteger chunks_attempted = new AtomicInteger(0);
-    AtomicLong total_loadtime_ns = new AtomicLong(0L);
-    AtomicLong total_exceptions = new AtomicLong(0L);
-    AtomicInteger ticklistcalls = new AtomicInteger(0);
+    AtomicInteger chunks_read[];
+    AtomicLong chunks_read_times[];
     
-    /* Tile hash manager */
-    public TileHashManager hashman;
     /* lock for our data structures */
     public static final Object lock = new Object();
 
@@ -244,11 +240,14 @@ public class MapManager {
         int cxmin, cxmax, czmin, czmax;
         String rendertype;
         boolean cancelled;
+        boolean shutdown = false;
         boolean pausedforworld = false;
         boolean updaterender = false;
+        boolean quiet = false;
         String mapname;
         AtomicLong total_render_ns = new AtomicLong(0L);
         AtomicInteger rendercalls = new AtomicInteger(0);
+        long lastPendingSaveTS = 0; // Timestamp of last pending state save (msec)
 
         /* Full world, all maps render */
         FullWorldRenderState(DynmapWorld dworld, DynmapLocation l, DynmapCommandSender sender, String mapname, boolean updaterender) {
@@ -431,6 +430,13 @@ public class MapManager {
                 tileQueue.done(tile0);            	
             }
         }
+        
+        public void saveRefresh() {
+            if (saverestorepending && world.isLoaded() && (savependingperiod > 0)) {
+                savePending(this.world, true);    // Save the pending data for the given world
+            }
+        }
+        
         public void run() {
             long tstart = System.currentTimeMillis();
             MapTile tile = null;
@@ -438,9 +444,16 @@ public class MapManager {
             
             if(cancelled) {
             	cleanup();
+            	if (!shutdown) {
+            	    saveRefresh();
+            	}
             	return;
             }
             if(tile0 == null) {    /* Not single tile render */
+                if (saverestorepending && world.isLoaded() && (savependingperiod > 0) && ((lastPendingSaveTS + (1000 *savependingperiod))  < System.currentTimeMillis())) {
+                    savePending(this.world, true);    // Save the pending data for the given world
+                    lastPendingSaveTS = System.currentTimeMillis();
+                }
                 if(pausefullrenders || tpspausefullrenders) {    /* Update renders are paused? */
                     scheduleDelayedJob(this, 20*5); /* Delay 5 seconds and retry */
                     return;
@@ -464,12 +477,14 @@ public class MapManager {
                         int rndcalls = rendercalls.get();
                         if(rndcalls == 0) rndcalls = 1;
                         double rendtime = total_render_ns.doubleValue() * 0.000001 / rndcalls;
-                        if(activemapcnt > 1)
+                        if(activemapcnt > 1) {
                             sendMessage(String.format("%s of maps [%s] of '%s' completed - %d tiles rendered each (%.2f msec/map-tile, %.2f msec per render)",
-                                    rendertype, activemaps, world.getName(), rendercnt, msecpertile, rendtime));
-                        else
+                                rendertype, activemaps, world.getName(), rendercnt, msecpertile, rendtime));
+                        }
+                        else {
                             sendMessage(String.format("%s of map '%s' of '%s' completed - %d tiles rendered (%.2f msec/map-tile, %.2f msec per render)",
-                                    rendertype, activemaps, world.getName(), rendercnt, msecpertile, rendtime));
+                                rendertype, activemaps, world.getName(), rendercnt, msecpertile, rendtime));
+                        }
                         /* Now, if fullrender, use the render bitmap to purge obsolete tiles */
                         if(rendertype.equals(RENDERTYPE_FULLRENDER)) {
                             if(activemapcnt == 1) {
@@ -506,6 +521,7 @@ public class MapManager {
                     if(map_index >= world.maps.size()) {    /* Last one done? */
                         sendMessage(rendertype + " of '" + world.getName() + "' finished.");
                         cleanup();
+                        saveRefresh();
                         return;
                     }
                     map = world.maps.get(map_index);
@@ -595,24 +611,37 @@ public class MapManager {
                     }
                 }
                 /* Now, do our render (first one) */
-                notdone = processTile(tileset.get(0), tstart, cnt);
+                tile = tileset.get(0);
+                notdone = processTile(tile, tstart, cnt);
+                if ((!notdone) && (tile0 == null)) {    // Not completed? Push back on queue
+                    renderQueue.push(tile);
+                }
                 /* Now, join with others */
                 for(int i = 0; i < rslt.size(); i++) {
+                    boolean rsltflag = false;
                     try {
-                        notdone = notdone && rslt.get(i).get();
+                        rsltflag = rslt.get(i).get();
                     } catch (CancellationException cx) {
-                        notdone = false;
+                        rsltflag = false;
                     } catch (ExecutionException xx) {
                         Log.severe("Execution exception while processing tile: ", xx.getCause());
-                        notdone = false;
+                        rsltflag = false;
                     } catch (InterruptedException ix) {
-                        notdone = false;
+                        rsltflag = false;
+                    }
+                    notdone = notdone && rsltflag;
+                    if ((!rsltflag) && (tile0 == null)) {    // Not completed? Push back on queue
+                        tile = tileset.get(i+1);
+                        renderQueue.push(tile);
                     }
                 }
                 timeaccum = save_timeaccum + System.currentTimeMillis() - tstart;
             }
             else {
                 notdone = processTile(tile, tstart, 1);
+                if ((!notdone) && (tile0 == null)) {    // Not completed? Push back on queue
+                    renderQueue.push(tile);
+                }
             }
             
             if(notdone) {
@@ -630,7 +659,8 @@ public class MapManager {
                 }
             }
             else {
-                cleanup();
+                //cleanup();
+                shutdownRender();
             }
         }
 
@@ -649,12 +679,9 @@ public class MapManager {
                 if(!good) requiredChunks = Collections.emptyList();
             }
             /* Fetch chunk cache from server thread */
-            long clt0 = System.nanoTime();
             MapChunkCache cache = core.getServer().createMapChunkCache(world, requiredChunks, tile.isBlockTypeDataNeeded(), 
                                                       tile.isHightestBlockYDataNeeded(), tile.isBiomeDataNeeded(), 
                                                       tile.isRawBiomeDataNeeded());
-            total_chunk_cache_loadtime_ns.addAndGet(System.nanoTime() - clt0);
-            chunk_caches_attempted.incrementAndGet();
             if(cache == null) {
                 /* If world unloaded, don't cancel */
                 if(world.isLoaded() == false) {
@@ -664,10 +691,10 @@ public class MapManager {
             }
             /* Update stats */
             chunk_caches_created.incrementAndGet();
-            chunks_read.addAndGet(cache.getChunksLoaded());
-            chunks_attempted.addAndGet(cache.getChunkLoadsAttempted());
-            total_loadtime_ns.addAndGet(cache.getTotalRuntimeNanos());
-            total_exceptions.addAndGet(cache.getExceptionCount());
+            for (MapChunkCache.ChunkStats cs : MapChunkCache.ChunkStats.values()) {
+                chunks_read[cs.ordinal()].addAndGet(cache.getChunksLoaded(cs));
+                chunks_read_times[cs.ordinal()].addAndGet(cache.getTotalRuntimeNanos(cs));
+            }
             if(tile0 != null) {    /* Single tile? */
                 if(cache.isEmpty() == false)
                     tile.render(cache, null);
@@ -698,7 +725,7 @@ public class MapManager {
                     if(!cache.isEmpty()) {
                         rendercnt++;
                         timeaccum += System.currentTimeMillis() - tstart;
-                        if((rendercnt % progressinterval) == 0) {
+                        if (((rendercnt % progressinterval) == 0) && (!quiet)) {
                             int rndcalls = rendercalls.get();
                             if (rndcalls == 0) rndcalls = 1;
                             double rendtime = total_render_ns.doubleValue() * 0.000001 / rndcalls;
@@ -722,7 +749,11 @@ public class MapManager {
         public void cancelRender() {
         	cancelled = true;
         }
-        
+
+        public void shutdownRender() {
+            shutdown = true;
+            cancelRender();
+        }
         public void sendMessage(String msg) {
             if(sender != null) {
                 sender.sendMessage(msg);
@@ -733,6 +764,15 @@ public class MapManager {
         }
     }
 
+    private class ProcessOBJExport implements Runnable {
+        private OBJExport exp;
+        private DynmapCommandSender sender;
+        
+        public void run() {
+            exp.processExport(sender);
+        }
+    }
+    
     private class CheckWorldTimes implements Runnable {
         public void run() {
             Future<Integer> f = core.getServer().callSyncMethod(new Callable<Integer>() {
@@ -830,9 +870,18 @@ public class MapManager {
     public MapManager(DynmapCore core, ConfigurationNode configuration) {
         this.core = core;
         mapman = this;
+        
+        chunks_read = new AtomicInteger[MapChunkCache.ChunkStats.values().length];
+        chunks_read_times = new AtomicLong[MapChunkCache.ChunkStats.values().length];
+        for (int i = 0; i < MapChunkCache.ChunkStats.values().length; i++) {
+            chunks_read[i] = new AtomicInteger(0);
+            chunks_read_times[i] = new AtomicLong(0L);
+        }
 
         /* Get block hiding data, if any */
         hideores = configuration.getBoolean("hideores", false);
+        useBrightnessTable = configuration.getBoolean("use-brightness-table", false);
+        
         blockidalias = new short[4096];
         for (int i = 0; i < blockidalias.length; i++) {
             blockidalias[i] = (short) i;
@@ -882,7 +931,10 @@ public class MapManager {
         if (tpslimit_fullrenders > 19.5) tpslimit_fullrenders = 19.5;
         tpslimit_zoomout = configuration.getDouble("zoomout-min-tps", 18.0);
         if (tpslimit_zoomout > 19.5) tpslimit_zoomout = 19.5;
-
+        // Load the save pending job period
+        savependingperiod = configuration.getInteger("save-pending-period", 900);
+        if ((savependingperiod > 0) && (savependingperiod < 60)) savependingperiod = 60;
+        
         this.tileQueue = new AsynchronousQueue<MapTile>(
                 new Handler<MapTile>() {
                 @Override
@@ -905,8 +957,6 @@ public class MapManager {
         /* Get zoomout processing periond in seconds */
         zoomout_period = configuration.getInteger("zoomoutperiod", DEFAULT_ZOOMOUT_PERIOD);
         if(zoomout_period < 5) zoomout_period = 5;
-        
-        hashman = new TileHashManager(core.getTilesFolder(), configuration.getBoolean("enabletilehash", true));
         
         tileQueue.start();
     }
@@ -957,6 +1007,13 @@ public class MapManager {
         /* Schedule first tile to be worked */
         scheduleDelayedJob(rndr, 0);
         sender.sendMessage("Render of " + radius + " block radius starting on world '" + wname + "'...");
+    }
+    
+    public void startOBJExport(OBJExport exp, DynmapCommandSender sender) {
+        ProcessOBJExport e = new ProcessOBJExport();
+        e.exp = exp;
+        e.sender = sender;
+        scheduleDelayedJob(e, 0);
     }
 
     void cancelRender(String w, DynmapCommandSender sender) {
@@ -1040,7 +1097,7 @@ public class MapManager {
         final MapType mtf = mt;
         Runnable purgejob = new Runnable() {
             public void run() {
-                mtf.purgeOldTiles(world, new TileFlags());
+                world.purgeMap(mtf);
                 sender.sendMessage("Purge of tiles for map '" + mapname + "' for world '" + worldname + "' completed");
             }
         };
@@ -1056,6 +1113,11 @@ public class MapManager {
             sender.sendMessage("Could not purge world: world '" + worldname + "' not defined in configuration.");
             return;
         }
+        // Cancel any pending render
+        cancelRender(worldname, sender);
+        // And purge update queue for world
+        purgeQueue(sender, worldname);
+        
         Runnable purgejob = new Runnable() {
             public void run() {
                 world.purgeTree();
@@ -1114,9 +1176,15 @@ public class MapManager {
     }
 
     public void deactivateWorld(String wname) {
-        cancelRender(wname, null);  /* Cancel any render */
-        
-        DynmapWorld w = worldsLookup.remove(wname); /* Remove from lookup */
+        //cancelRender(wname, null);  /* Cancel any render */
+        DynmapWorld w = worldsLookup.get(wname);
+        if (w != null) {
+            if(saverestorepending)
+                savePending(w, false);  // Save any pending jobs
+            else
+                cancelRender(wname, null);  /* Cancel any render */
+        }
+        w = worldsLookup.remove(wname); /* Remove from lookup */
         if(w != null) { /* If found, remove from active list */
             worlds.remove(w);
         }
@@ -1131,7 +1199,7 @@ public class MapManager {
 
     public void unloadWorld(DynmapWorld dynmapWorld) {
         if(saverestorepending)
-            savePending(dynmapWorld);
+            savePending(dynmapWorld, false);
     }
 
     private void loadPending(DynmapWorld w) {
@@ -1165,23 +1233,31 @@ public class MapManager {
                 }
             }
             if(cnt > 0) {
-                Log.info("Loaded " + cnt + " pending tile renders for world '" + wname);
+                Log.info("Loaded " + cnt + " pending tile renders for world '" + wname + "'");
+            }
+            /* Get invalidated zoom out tiles pending */
+            invmap = cn.getNode("invZoomOut");
+            if (invmap != null) {
+                for(MapTypeState mts : w.mapstate) {
+                    List<List<String>> v = invmap.getList(mts.type.getPrefix());
+                    if (v != null) {
+                        mts.restoreZoomOut(v);
+                    }
+                }
             }
             /* Get saved render job, if any */
             ConfigurationNode job = cn.getNode("job");
-            if(job != null) {
+            if((job != null) && (active_renders.get(wname) == null)) {
                 try {
                     FullWorldRenderState j = new FullWorldRenderState(job);
                     active_renders.put(wname, j);
                     if(did_start)   /* Past initial start */
                         scheduleDelayedJob(j, 5000);
-
+                    Log.info(j.rendertype + " for world '" + wname + "' restored");
                 } catch (Exception x) {
                     Log.info("Unable to restore render job for world '" + wname + "' - map configuration changed");
                 }
             }
-            
-            f.delete(); /* And clean it up */
         }
     }
     
@@ -1189,9 +1265,8 @@ public class MapManager {
         return active_renders.containsKey(wname);
     }
 
-    private void savePending(DynmapWorld w) {
+    private void savePending(DynmapWorld w, boolean keepQueue) {
         List<MapTile> mt = tileQueue.popAll();
-        boolean dosave = false;
         File f = new File(core.getDataFolder(), w.getName() + ".pending");
         ConfigurationNode saved = new ConfigurationNode();
         ArrayList<ConfigurationNode> savedtiles = new ArrayList<ConfigurationNode>();
@@ -1204,11 +1279,13 @@ public class MapManager {
             if(tilenode != null) {
                 savedtiles.add(tilenode);
             }
+            if (keepQueue) {
+                tileQueue.push(tile);
+            }
         }
         int cnt = savedtiles.size();
         if(cnt > 0) { /* Something to save? */
             saved.put("tiles", savedtiles);
-            dosave = true;
         }
         /* Save invalidated tiles */
         HashMap<String, Object> invalid = new HashMap<String,Object>();
@@ -1218,18 +1295,35 @@ public class MapManager {
         }
         if(cnt > 0) {
             saved.put("invalid", invalid);
-            dosave = true;
-            Log.info("Saved " + cnt + " pending tile renders in world '" + w.getName());
+            if (!keepQueue) {
+                Log.info("Saved " + cnt + " pending tile renders in world '" + w.getName() + "'");
+            }
+        }
+        /* Save invalidated zoom out tiles pending */
+        HashMap<String, List<List<String>>> invzooms = new HashMap<String,List<List<String>>>();
+        for(MapTypeState mts : w.mapstate) {
+            List<List<String>> szo = mts.saveZoomOut();
+            if (szo != null) {
+                invzooms.put(mts.type.getPrefix(), szo);
+            }
+        }
+        if (!invzooms.isEmpty()) {
+            saved.put("invZoomOut", invzooms);
         }
         
-        FullWorldRenderState job = active_renders.remove(w.getName());
+        FullWorldRenderState job = active_renders.get(w.getName());
         if(job != null) {
             saved.put("job", job.saveState());
-            job.cancelRender();
-            dosave = true;
-            Log.info("Saved active render job in world '" + w.getName());
+            if (!keepQueue) {
+                active_renders.remove(w.getName());
+                job.shutdownRender();
+                Log.info(job.rendertype + " job saved for world '" + w.getName() + "'");
+            }
         }
-        if(dosave) {
+        if (saved.isEmpty()) {
+            f.delete();
+        }
+        else {
             saved.save(f);
         }
     }
@@ -1290,35 +1384,29 @@ public class MapManager {
     }
 
     public void stopRendering() {
+        // Stop the tile queue
+        tileQueue.stop();
         /* Tell all worlds to cancel any zoom out processing */
         for(DynmapWorld w: worlds)
             w.cancelZoomOutFreshen();
-        render_pool.shutdown();
-        try {
-            render_pool.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException ix) {
-        }
-        tileQueue.stop();
-        mapman = null;
-        hdmapman = null;
         /* Unload all worlds, and save any pending */
         for(DynmapWorld w : worlds) {
             if(w.isLoaded()) {
                 w.setWorldUnloaded();
                 if(saverestorepending) {
-                    savePending(w);
+                    savePending(w, false);
                 }
             }
         }
-        did_start = false;
-    }
-
-    public File getTileFile(MapTile tile) {
-        File worldTileDirectory = tile.getDynmapWorld().worldtilepath;
-        if (!worldTileDirectory.isDirectory() && !worldTileDirectory.mkdirs()) {
-            Log.warning("Could not create directory for tiles ('" + worldTileDirectory + "').");
+        // Shutdown render pool
+        render_pool.shutdown();
+        try {
+            render_pool.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException ix) {
         }
-        return new File(worldTileDirectory, tile.getFilename());
+        mapman = null;
+        hdmapman = null;
+        did_start = false;
     }
 
     public void pushUpdate(Client.Update update) {
@@ -1347,10 +1435,15 @@ public class MapManager {
 
     /**
      *  Update map tile statistics
+     * @param tile - map tile
+     * @param prefix - map prefix
+     * @param rendered - true if tile rendered
+     * @param updated - true if tile updated
+     * @param transparent - true if tile transparent
      */
     public void updateStatistics(MapTile tile, String prefix, boolean rendered, boolean updated, boolean transparent) {
         synchronized(lock) {
-            String k = tile.getKey(prefix);
+            String k = tile.getDynmapWorld().getName() + "." + prefix;
             MapStats ms = mapstats.get(k);
             if(ms == null) {
                 ms = new MapStats();
@@ -1367,6 +1460,8 @@ public class MapManager {
     }
     /**
      * Print statistics command
+     * @param sender - command sender
+     * @param prefix - map ID prefix for stats to print
      */
     public void printStats(DynmapCommandSender sender, String prefix) {
         sender.sendMessage("Tile Render Statistics:");
@@ -1400,22 +1495,16 @@ public class MapManager {
         /* Chunk load stats */
         sender.sendMessage("Chunk Loading Statistics:");
         sender.sendMessage(String.format("  Cache hit rate: %.2f%%", core.getServer().getCacheHitRate()));
-        int setcnt = chunk_caches_attempted.get();
-        sender.sendMessage(String.format("  Chunk sets: created=%d, attempted=%d", chunk_caches_created.get(), chunk_caches_attempted.get()));
-        int readcnt = chunks_read.get();
-        sender.sendMessage(String.format("  Chunk: loaded=%d, attempted=%d", readcnt, chunks_attempted.get()));
-        double ns = total_loadtime_ns.doubleValue() * 0.000001;    /* Convert to milliseconds */
-        double chunkloadns = total_chunk_cache_loadtime_ns.doubleValue() * 0.000001;
-        if(readcnt == 0) readcnt = 1;
-        if(setcnt == 0) setcnt = 1;
-        sender.sendMessage(String.format("  Chunk load times: %.2f msec (%.2f msec/chunk)", ns, (ns / readcnt)));
-        sender.sendMessage(String.format("  Chunk set load times: %.2f msec (%.2f msec/set)", chunkloadns, (chunkloadns / setcnt)));
-        sender.sendMessage(String.format("  Chunk set delay times: %.2f msec (%.2f msec/set)", chunkloadns-ns, ((chunkloadns-ns) / setcnt)));
-        sender.sendMessage(String.format("  Chunk set exceptions: %d", total_exceptions.get()));
-        sender.sendMessage(String.format("  World tick list processing calls: %d", ticklistcalls.get()));
+        for (MapChunkCache.ChunkStats cs : MapChunkCache.ChunkStats.values()) {
+            int cnt = chunks_read[cs.ordinal()].get();
+            if (cnt == 0) cnt = 1;
+            long ts = chunks_read_times[cs.ordinal()].get();
+            sender.sendMessage(String.format("  Chunks processed: %s: count=%d, %.2f msec/chunk", cs.getLabel(), cnt, 0.000001 * (ts / cnt)));
+        }
     }
     /**
      * Print trigger statistics command
+     * @param sender - command sender
      */
     public void printTriggerStats(DynmapCommandSender sender) {
         sender.sendMessage("Render Trigger Statistics:");
@@ -1429,6 +1518,8 @@ public class MapManager {
 
     /**
      * Reset statistics
+     * @param sender - command sender
+     * @param prefix - prefix of map IDs to be reset
      */
     public void resetStats(DynmapCommandSender sender, String prefix) {
         synchronized(lock) {
@@ -1448,13 +1539,10 @@ public class MapManager {
                 ts.tilesqueued = 0;
             }
             chunk_caches_created.set(0);
-            chunk_caches_attempted.set(0);
-            chunks_read.set(0);
-            chunks_attempted.set(0);
-            total_loadtime_ns.set(0);
-            total_chunk_cache_loadtime_ns.set(0);
-            total_exceptions.set(0);
-            ticklistcalls.set(0);
+            for (int i = 0; i < chunks_read.length; i++) {
+                chunks_read[i].set(0);
+                chunks_read_times[i].set(0);
+            }
         }
         core.getServer().resetCacheStats();
         sender.sendMessage("Tile Render Statistics reset");
@@ -1518,9 +1606,6 @@ public class MapManager {
         return pauseupdaterenders;
     }
     
-    public void incExtraTickList() {
-        ticklistcalls.incrementAndGet();
-    }
     /* Connect any jobs tied to this player back to the player (resumes output to player) */
     void connectTasksToPlayer(DynmapPlayer p) {
         String pn = p.getName();
@@ -1641,5 +1726,27 @@ public class MapManager {
     }
     public boolean getTPSZoomOutPause() {
         return tpspausezoomout;
+    }
+    public void setJobsQuiet(DynmapCommandSender sender) {
+        DynmapPlayer player = null;
+        if (sender instanceof DynmapPlayer) {
+            player = (DynmapPlayer) sender;
+        }
+        synchronized (lock) {
+            for (FullWorldRenderState job : active_renders.values()) {
+                if (job.sender instanceof DynmapPlayer) {
+                    DynmapPlayer js = (DynmapPlayer) job.sender;
+                    if ((player != null) && (player.getName().equals(js.getName()))) {
+                        job.quiet = true;
+                    }
+                }
+                else if (player == null) {  // If both are console
+                    job.quiet = true;
+                }
+            }
+        }
+    }
+    public boolean useBrightnessTable() {
+        return useBrightnessTable;
     }
 }

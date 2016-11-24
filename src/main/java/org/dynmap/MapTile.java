@@ -17,23 +17,15 @@ public abstract class MapTile {
         return world;
     }
 
-    public abstract String getFilename();
-
-    public abstract String getDayFilename();
-
     public MapTile(DynmapWorld world) {
         this.world = world;
     }
 
     @Override
-    public int hashCode() {
-        return getFilename().hashCode() ^ world.hashCode();
-    }
+    public abstract int hashCode();
 
     @Override
     public abstract boolean equals(Object obj);
-    
-    public abstract String getKey(String prefix);
     
     public abstract boolean isBiomeDataNeeded();
     public abstract boolean isHightestBlockYDataNeeded();

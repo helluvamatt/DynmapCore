@@ -1,8 +1,10 @@
 package org.dynmap.common;
 
+import org.dynmap.hdmap.HDBlockModels;
+
 /* Generic biome mapping */
 public class BiomeMap {
-    private static BiomeMap[] biome_by_index = new BiomeMap[0];
+    private static BiomeMap[] biome_by_index = new BiomeMap[1025];
     public static final BiomeMap NULL = new BiomeMap(-1, "NULL", 0.5, 0.5, 0xFFFFFF, 0, 0);
 
     public static final BiomeMap OCEAN = new BiomeMap(0, "OCEAN");
@@ -28,7 +30,7 @@ public class BiomeMap {
     public static final BiomeMap SMALL_MOUNTAINS = new BiomeMap(20, "SMALL_MOUNTAINS", 0.2, 0.8);
     public static final BiomeMap JUNGLE = new BiomeMap(21, "JUNGLE", 1.2, 0.9);
     public static final BiomeMap JUNGLE_HILLS = new BiomeMap(22, "JUNGLE_HILLS", 1.2, 0.9);
-    
+
     public static final int LAST_WELL_KNOWN = 22;
     
     private double tmp;
@@ -39,7 +41,68 @@ public class BiomeMap {
     private final String id;
     private final int index;
     private int biomeindex256; // Standard biome mapping index (for 256 x 256)
+    private boolean isDef;
     
+    private static boolean loadDone = false;
+    
+    public static void loadWellKnownByVersion(String mcver) {
+        if (loadDone) return;
+        if (HDBlockModels.checkVersionRange(mcver, "1.7.0-")) {
+            new BiomeMap(23, "JUNGLE_EDGE", 0.95, 0.8);
+            new BiomeMap(24, "DEEP_OCEAN");
+            new BiomeMap(25, "STONE_BEACH", 0.2, 0.3);
+            new BiomeMap(26, "COLD_BEACH", 0.05, 0.3);
+            new BiomeMap(27, "BIRCH_FOREST", 0.6, 0.6);
+            new BiomeMap(28, "BIRCH_FOREST_HILLS", 0.6, 0.6);
+            new BiomeMap(29, "ROOFED_FOREST", 0.7, 0.8);
+            new BiomeMap(30, "COLD_TAIGA", -0.5, 0.4);
+            new BiomeMap(31, "COLD_TAIGA_HILLS", -0.5, 0.4);
+            new BiomeMap(32, "MEGA_TAIGA", 0.3, 0.8);
+            new BiomeMap(33, "MEGA_TAIGA_HILLS", 0.3, 0.8);
+            new BiomeMap(34, "EXTREME_HILLS_PLUS", 0.2, 0.3);
+            new BiomeMap(35, "SAVANNA", 1.2, 0.0);
+            new BiomeMap(36, "SAVANNA_PLATEAU", 1.0, 0.0);
+            new BiomeMap(37, "MESA", 2.0, 0.0);
+            new BiomeMap(38, "MESA_PLATEAU_FOREST", 2.0, 0.0);
+            new BiomeMap(39, "MESA_PLATEAU", 2.0, 0.0);
+            new BiomeMap(129, "SUNFLOWER_PLAINS", 0.8, 0.4);
+            new BiomeMap(130, "DESERT_MOUNTAINS", 2.0, 0.0);
+            new BiomeMap(131, "EXTREME_HILLS_MOUNTAINS", 0.2, 0.3);
+            new BiomeMap(132, "FLOWER_FOREST", 0.7, 0.8);
+            new BiomeMap(133, "TAIGA_MOUNTAINS", 0.05, 0.8);
+            new BiomeMap(134, "SWAMPLAND_MOUNTAINS", 0.8, 0.9, 0xE0FFAE, 0x4E0E4E, 0x4E0E4E);
+            new BiomeMap(140, "ICE_PLAINS_SPIKES", 0.0, 0.5);
+            new BiomeMap(149, "JUNGLE_MOUNTAINS", 1.2, 0.9);
+            new BiomeMap(151, "JUNGLE_EDGE_MOUNTAINS", 0.95, 0.8);
+            new BiomeMap(155, "BIRCH_FOREST_MOUNTAINS", 0.6, 0.6);
+            new BiomeMap(156, "BIRCH_FOREST_HILLS_MOUNTAINS", 0.6, 0.6);
+            new BiomeMap(157, "ROOFED_FOREST_MOUNTAINS", 0.7, 0.8);
+            new BiomeMap(158, "COLD_TAIGA_MOUNTAINS", -0.5, 0.4);
+            new BiomeMap(160, "MEGA_SPRUCE_TAIGA", 0.25, 0.8);
+            new BiomeMap(161, "MEGA_SPRUCE_TAIGA_HILLS", 0.3, 0.8);
+            new BiomeMap(162, "EXTREME_HILLS_PLUS_MOUNTAINS", 0.2, 0.3);
+            new BiomeMap(163, "SAVANNA_MOUNTAINS", 1.2, 0.0);
+            new BiomeMap(164, "SAVANNA_PLATEAU_MOUNTAINS", 1.0, 0.0);
+            new BiomeMap(165, "MESA_BRYCE", 2.0, 0.0);
+            new BiomeMap(166, "MESA_PLATEAU_FOREST_MOUNTAINS", 2.0, 0.0);
+            new BiomeMap(167, "MESA_PLATEAU_MOUNTAINS", 2.0, 0.0);
+        }
+        if (HDBlockModels.checkVersionRange(mcver, "1.9.0-")) {
+            new BiomeMap(127, "THE_VOID");
+        }
+        loadDone = true;
+    }
+    
+    static {
+        for (int i = 0; i < 1024; i++) {
+            BiomeMap bm = BiomeMap.byBiomeID(i);
+            if (bm == null) {
+                bm = new BiomeMap(i, "BIOME_" + i);
+                bm.isDef = true;
+            }
+        }
+    }
+
     private static boolean isUniqueID(String id) {
         for(int i = 0; i < biome_by_index.length; i++) {
             if(biome_by_index[i] == null) continue;
@@ -65,16 +128,6 @@ public class BiomeMap {
         idx++;  /* Insert one after ID value - null is zero index */
         this.index = idx;
         if(idx >= 0) {
-            if(idx >= biome_by_index.length) {
-                BiomeMap newmap[] = new BiomeMap[idx+1];
-                int oldlen = biome_by_index.length;
-                System.arraycopy(biome_by_index, 0, newmap, 0, oldlen);
-                biome_by_index = newmap;
-
-                for(int i = oldlen; i < idx; i++) {
-                    new BiomeMap(i-1, "BIOME_" + (i-1));
-                }
-            }
             biome_by_index[idx] = this;
         }
     }
@@ -149,6 +202,7 @@ public class BiomeMap {
         if(tmp < 0.0) tmp = 0.0;
         if(tmp > 1.0) tmp = 1.0;
         this.tmp = tmp;
+        this.biomeindex256 = this.biomeLookup(256);
     }
     public void setRainfall(double rain) {
         if(rain < 0.0) rain = 0.0;
@@ -161,5 +215,8 @@ public class BiomeMap {
     }
     public final double getRainfall() {
         return this.rain;
+    }
+    public boolean isDefault() {
+        return isDef;
     }
 }

@@ -2,12 +2,16 @@ package org.dynmap.hdmap;
 
 import static org.dynmap.JSONUtils.s;
 
+import java.io.IOException;
 import java.util.List;
 
 import org.dynmap.Color;
 import org.dynmap.ConfigurationNode;
 import org.dynmap.DynmapCore;
 import org.dynmap.Log;
+import org.dynmap.MapManager;
+import org.dynmap.common.DynmapCommandSender;
+import org.dynmap.exporter.OBJExport;
 import org.dynmap.utils.DynLongHashMap;
 import org.dynmap.utils.MapChunkCache;
 import org.dynmap.utils.MapIterator;
@@ -127,6 +131,7 @@ public class TopoHDShader implements HDShader {
         private int scale;
         private int heightshift;    /* Divide to keep in 0-127 range of colors */
         private boolean inWater;
+        final int[] lightingTable;
         
         private OurShaderState(MapIterator mapiter, HDMap map, MapChunkCache cache, int scale) {
             this.mapiter = mapiter;
@@ -148,6 +153,12 @@ public class TopoHDShader implements HDShader {
             while(wh > 256) {
                 heightshift++;
                 wh >>= 1;
+            }
+            if (MapManager.mapman.useBrightnessTable()) {
+                lightingTable = cache.getWorld().getBrightnessTable();
+            }
+            else {
+                lightingTable = null;
             }
             inWater = false;
         }
@@ -294,6 +305,10 @@ public class TopoHDShader implements HDShader {
         public DynLongHashMap getCTMTextureCache() {
             return null;
         }
+        @Override
+        public int[] getLightingTable() {
+            return lightingTable;
+        }
     }
 
     /**
@@ -312,5 +327,14 @@ public class TopoHDShader implements HDShader {
     /* Add shader's contributions to JSON for map object */
     public void addClientConfiguration(JSONObject mapObject) {
         s(mapObject, "shader", name);
+    }
+    @Override
+    public void exportAsMaterialLibrary(DynmapCommandSender sender, OBJExport out) throws IOException {
+        throw new IOException("Export unsupported");
+    }
+    private static final String[] nulllist = new String[0];
+    @Override
+    public String[] getCurrentBlockMaterials(int blkid, int blkdata, int renderdata, MapIterator mapiter, int[] txtidx, BlockStep[] steps) {
+        return nulllist;
     }
 }

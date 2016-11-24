@@ -2,11 +2,18 @@ package org.dynmap.hdmap;
 
 import static org.dynmap.JSONUtils.s;
 
+import java.io.IOException;
+import java.util.BitSet;
+import java.util.List;
+
 import org.dynmap.Color;
 import org.dynmap.ConfigurationNode;
 import org.dynmap.DynmapCore;
 import org.dynmap.Log;
 import org.dynmap.MapManager;
+import org.dynmap.common.DynmapCommandSender;
+import org.dynmap.exporter.OBJExport;
+import org.dynmap.utils.BlockStep;
 import org.dynmap.utils.DynLongHashMap;
 import org.dynmap.utils.MapChunkCache;
 import org.dynmap.utils.MapIterator;
@@ -21,6 +28,7 @@ public class TexturePackHDShader implements HDShader {
     private final boolean bettergrass;
     private final int gridscale;
     private final DynmapCore core;
+    private final BitSet hiddenids;
     
     public TexturePackHDShader(DynmapCore core, ConfigurationNode configuration) {
         tpname = configuration.getString("texturepack", "minecraft");
@@ -29,6 +37,19 @@ public class TexturePackHDShader implements HDShader {
         biome_shaded = configuration.getBoolean("biomeshaded", true);
         bettergrass = configuration.getBoolean("better-grass", MapManager.mapman.getBetterGrass());
         gridscale = configuration.getInteger("grid-scale", 0);
+        List<Object> hidden = configuration.getList("hiddenids");
+        if(hidden != null) {
+            hiddenids = new BitSet();
+            for(Object o : hidden) {
+                if(o instanceof Integer) {
+                    int v = ((Integer)o);
+                    hiddenids.set(v);
+                }
+            }
+        }
+        else {
+            hiddenids = null;
+        }
     }
     
     private final TexturePack getTexturePack() {
@@ -89,6 +110,7 @@ public class TexturePackHDShader implements HDShader {
         final boolean do_biome_shading;
         final boolean do_better_grass;
         DynLongHashMap ctm_cache;
+        final int[] lightingTable;
         
         protected ShaderState(MapIterator mapiter, HDMap map, MapChunkCache cache, int scale) {
             this.mapiter = mapiter;
@@ -111,6 +133,12 @@ public class TexturePackHDShader implements HDShader {
             /* Biome raw data only works on normal worlds at this point */
             do_biome_shading = biome_shaded; // && (cache.getWorld().getEnvironment() == Environment.NORMAL);
             do_better_grass = bettergrass;
+            if (MapManager.mapman.useBrightnessTable()) {
+                lightingTable = cache.getWorld().getBrightnessTable();
+            }
+            else {
+                lightingTable = null;
+            }
         }
         /**
          * Get our shader
@@ -148,6 +176,9 @@ public class TexturePackHDShader implements HDShader {
          */
         public boolean processBlock(HDPerspectiveState ps) {
             int blocktype = ps.getBlockTypeID();
+            if ((hiddenids != null) && hiddenids.get(blocktype)) {
+                blocktype = 0;
+            }
             int lastblocktype = lastblkid;
             lastblkid = blocktype;
             
@@ -162,22 +193,49 @@ public class TexturePackHDShader implements HDShader {
 
             if (c.getAlpha() > 0) {
                 /* Scale brightness depending upon face */
-                switch(ps.getLastBlockStep()) {
-                    case X_MINUS:
-                    case X_PLUS:
-                        /* 60% brightness */
-                        c.blendColor(0xFFA0A0A0);
-                        break;
-                    case Y_MINUS:
-                    case Y_PLUS:
-                        /* 85% brightness for even, 90% for even*/
-                        if((mapiter.getY() & 0x01) == 0) 
-                            c.blendColor(0xFFD9D9D9);
-                        else
-                            c.blendColor(0xFFE6E6E6);
-                        break;
-                    default:
-                        break;
+                if (this.lightingTable != null) {
+                    switch(ps.getLastBlockStep()) {
+                        case X_MINUS:
+                        case X_PLUS:
+                            /* 60% brightness */
+                            c.blendColor(0xFF999999);
+                            break;
+                        case Y_MINUS:
+                            // 95% for even
+                            if((mapiter.getY() & 0x01) == 0) {
+                                c.blendColor(0xFFF3F3F3);
+                            }
+                            break;
+                        case Y_PLUS:
+                            /* 50%*/
+                            c.blendColor(0xFF808080);
+                            break;
+                        case Z_MINUS:
+                        case Z_PLUS:
+                        default:
+                            /* 80%*/
+                            c.blendColor(0xFFCDCDCD);
+                            break;
+                    }
+                }
+                else {
+                    switch(ps.getLastBlockStep()) {
+                        case X_MINUS:
+                        case X_PLUS:
+                            /* 60% brightness */
+                            c.blendColor(0xFFA0A0A0);
+                            break;
+                        case Y_MINUS:
+                        case Y_PLUS:
+                            /* 85% brightness for even, 90% for even*/
+                            if((mapiter.getY() & 0x01) == 0) 
+                                c.blendColor(0xFFD9D9D9);
+                            else
+                                c.blendColor(0xFFE6E6E6);
+                            break;
+                        default:
+                            break;
+                    }
                 }
                 /* Handle light level, if needed */
                 lighting.applyLighting(ps, this, c, tmpcolor);
@@ -247,6 +305,10 @@ public class TexturePackHDShader implements HDShader {
             }
             return ctm_cache;
         }
+        @Override
+        public int[] getLightingTable() {
+            return lightingTable;
+        }
     }
 
     /**
@@ -264,5 +326,27 @@ public class TexturePackHDShader implements HDShader {
     /* Add shader's contributions to JSON for map object */
     public void addClientConfiguration(JSONObject mapObject) {
         s(mapObject, "shader", name);
+    }
+
+    @Override
+    public void exportAsMaterialLibrary(DynmapCommandSender sender, OBJExport out) throws IOException {
+        if (tp == null) {
+            getTexturePack();   // Make sure its loaded
+        }
+        if (tp != null) {
+            tp.exportAsOBJMaterialLibrary(out, out.getBaseName());
+            return;
+        }
+        throw new IOException("Export unsupported - invalid texture pack");
+    }
+    @Override
+    public String[] getCurrentBlockMaterials(int blkid, int blkdata, int renderdata, MapIterator mapiter, int[] txtidx, BlockStep[] steps) {
+        if (tp == null) {
+            getTexturePack();   // Make sure its loaded
+        }
+        if (tp != null) {
+            return tp.getCurrentBlockMaterials(blkid, blkdata, renderdata, mapiter, txtidx, steps);
+        }
+        return new String[txtidx.length];
     }
 }

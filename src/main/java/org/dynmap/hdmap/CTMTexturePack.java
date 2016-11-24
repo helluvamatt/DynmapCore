@@ -15,6 +15,7 @@ import java.util.regex.Pattern;
 import org.dynmap.DynmapCore;
 import org.dynmap.Log;
 import org.dynmap.common.BiomeMap;
+import org.dynmap.debug.Debug;
 import org.dynmap.hdmap.TexturePack.TileFileFormat;
 import org.dynmap.utils.BlockStep;
 import org.dynmap.utils.DynLongHashMap;
@@ -145,7 +146,7 @@ public class CTMTexturePack {
     };
 
     public enum CTMMethod {
-        NONE, CTM, HORIZONTAL, TOP, RANDOM, REPEAT, VERTICAL, FIXED
+        NONE, CTM, HORIZONTAL, TOP, RANDOM, REPEAT, VERTICAL, FIXED, HORIZONTAL_VERTICAL, VERTICAL_HORIZONTAL
     }
     public enum CTMConnect {
         NONE, BLOCK, TILE, MATERIAL, UNKNOWN
@@ -286,6 +287,24 @@ public class CTMTexturePack {
             }
             return out;
         }
+        private int parseRenderPass(Properties p, String fld, int def) {
+            String v = p.getProperty(fld);
+            if (v == null) return def;
+            if (v.equalsIgnoreCase("overlay"))
+                return 3;
+            else if (v.equalsIgnoreCase("translucent"))
+                return 1;
+            else if (v.equalsIgnoreCase("backface"))
+                return 2;
+            else if (v.equalsIgnoreCase("solid"))
+                return 0;
+            else if (v.equalsIgnoreCase("cutout_mipped"))
+                return 0;
+            else if (v.equalsIgnoreCase("cutout"))
+                return 0;
+            else
+                return parseInt(p, fld, def);
+        }
         
         private int[] getIDList(Properties properties, String key, String type, String[] mappings) {
             Set<Integer> list = new HashSet<Integer>();
@@ -343,6 +362,12 @@ public class CTMTexturePack {
             else if (v.equals("vertical")) {
                 method = CTMMethod.VERTICAL;
             }
+            else if (v.equals("vertical+horizontal") || v.equals("v+h")) {
+                method = CTMMethod.VERTICAL_HORIZONTAL;
+            }
+            else if (v.equals("horizontal+vertical") || v.equals("h+v")) {
+                method = CTMMethod.HORIZONTAL_VERTICAL;
+            }
             else if (v.equals("top") || v.equals("sandstone")) {
                 method = CTMMethod.TOP;
             }
@@ -361,8 +386,8 @@ public class CTMTexturePack {
             }
         }
         private void getConnect(Properties p) {
-            String v = p.getProperty("connect");
-            if (v == null) {
+            String v = p.getProperty("connect", "none").toLowerCase();
+            if (v.equals("none")) {
                 this.connect = CTMConnect.NONE;
             }
             else if (v.equals("block")) {
@@ -393,7 +418,7 @@ public class CTMTexturePack {
                         }
                     }
                     if(s != null) {
-                        Log.info("CTM Biome not matched: " + s);
+                        Debug.debug("CTM Biome not matched: " + s);
                     }
                 }
                 this.biomes = new int[ids.size()];
@@ -475,7 +500,7 @@ public class CTMTexturePack {
                 for (int i = 0; i < out.length; i++) {
                     String vv = lst.get(i);
                     // If not absolute path
-                    if (vv.startsWith("/") == false) {
+                    if ((vv.startsWith("/") == false) && (vv.startsWith("assets/") == false)) {
                         vv = this.basePath + "/" + vv;    // Build path
                     }
                     if (vv.endsWith(".png")) {   // If needed, strip of png
@@ -541,7 +566,7 @@ public class CTMTexturePack {
             }
             this.minY = parseInt(p, "minHeight", -1);
             this.maxY = parseInt(p, "maxHeight", Integer.MAX_VALUE);
-            this.renderPass = parseInt(p, "renderPass", -1);
+            this.renderPass = parseRenderPass(p, "renderPass", -1);
             this.width = parseInt(p, "width", -1);
             this.height = parseInt(p, "height", -1);
             this.weights = parseInts(p, "weights");
@@ -552,7 +577,9 @@ public class CTMTexturePack {
             }
         }
         /**
-         * Finish initialize - return true if good
+         * Finish initialize
+         * @param fname - CTM filename
+         * @return true if good
          */
         public boolean isValid(String fname) {
             /* Must have name and base path */
@@ -584,10 +611,10 @@ public class CTMTexturePack {
                 Log.info("Bad connect: " + fname);
                 return false;
             }
-            if (this.renderPass > 0) {
-                Log.info("Unsupported render pass: " + fname);
-                return false;
-            }
+//            if (this.renderPass > 0) {
+//                Log.info("Unsupported render pass: " + fname);
+//                return false;
+//            }
             if ((this.faces & FACE_UNKNOWN) > 0) {
                 Log.info("Invalid face: " + fname);
                 return false;
@@ -610,7 +637,13 @@ public class CTMTexturePack {
                     
                 case VERTICAL:
                     return isValidVertical(fname);
-                    
+
+                case HORIZONTAL_VERTICAL:
+                    return isValidHorizontalVertical(fname);
+
+                case VERTICAL_HORIZONTAL:
+                    return isValidVerticalHorizontal(fname);
+
                 case FIXED:
                     return isValidFixed(fname);
                     
@@ -656,6 +689,26 @@ public class CTMTexturePack {
             }
             if ((this.tiles == null) || (this.tiles.length != 4)) {
                 Log.info("Incorrect tile count for Vertical method: " + fname);
+                return false;
+            }
+            return true;
+        }
+        private boolean isValidHorizontalVertical(String fname) {
+            if (this.tiles == null) {
+                this.tiles = this.parseTileNames("0-6");
+            }
+            if ((this.tiles == null) || (this.tiles.length != 7)) {
+                Log.info("Incorrect tile count for Horizontal+Vertical method: " + fname);
+                return false;
+            }
+            return true;
+        }
+        private boolean isValidVerticalHorizontal(String fname) {
+            if (this.tiles == null) {
+                this.tiles = this.parseTileNames("0-6");
+            }
+            if ((this.tiles == null) || (this.tiles.length != 7)) {
+                Log.info("Incorrect tile count for Vertical+Horizontal method: " + fname);
                 return false;
             }
             return true;
@@ -737,14 +790,14 @@ public class CTMTexturePack {
             for (int i = 0; i < tilenames.length; i++) {
                 String tn = tilenames[i];
                 String ftn = tn;
-                if (ftn.indexOf('/') < 0) { // no path (base tile)
+                if ((ftn.indexOf('/') < 0) && (ftn.startsWith("assets/") == false)) { // no path (base tile)
                     ftn = deftxtpath + tn;
                 }
                 if (!ftn.endsWith(".png")) {
                     ftn = ftn + ".png"; // Add .png if needed
                 }
                 // Find file ID, add if needed
-                int fid = TexturePack.findOrAddDynamicTileFile(ftn, 1, 1, TileFileFormat.GRID, new String[0]);
+                int fid = TexturePack.findOrAddDynamicTileFile(ftn, null, 1, 1, TileFileFormat.GRID, new String[0]);
                 rslt[i] = TexturePack.findOrAddDynamicTile(fid, 0); 
             }
             return rslt;
@@ -789,6 +842,8 @@ public class CTMTexturePack {
      * Constructor for CTM support, using texture pack loader
      * @param tpl - texture pack loader
      * @param tp - texture pack
+     * @param core - core object
+     * @param is_rp - if true, resource pack; if false, texture pack
      */
     public CTMTexturePack(TexturePackLoader tpl, TexturePack tp, DynmapCore core, boolean is_rp) {
         ArrayList<String> files = new ArrayList<String>();
@@ -816,6 +871,7 @@ public class CTMTexturePack {
     }
     /**
      * Test if enabled properly
+     * @return true if valid
      */
     public boolean isValid() {
         return (ctpfiles.length > 0);
@@ -884,7 +940,17 @@ public class CTMTexturePack {
             }
         }
     }
-    
+
+    // Constants for rotateUV
+    static final int REL_L = 0;
+    static final int REL_DL = 1;
+    static final int REL_D = 2;
+    static final int REL_DR = 3;
+    static final int REL_R = 4;
+    static final int REL_UR = 5;
+    static final int REL_U = 6;
+    static final int REL_UL = 7;
+
     private class Context {
         final MapIterator mapiter;
         final int blkid;
@@ -976,11 +1042,15 @@ public class CTMTexturePack {
             return textid;
         }
         // See if cached result
-        DynLongHashMap cache = ss.getCTMTextureCache();
-        long idx = (mapiter.getBlockKey() << 8) | laststep.ordinal();
-        Integer val = (Integer) cache.get(idx);
-        if (val != null) {
-            return val.intValue();
+        DynLongHashMap cache = null;
+        long idx = 0;
+        if (ss != null) {
+            cache = ss.getCTMTextureCache();
+            idx = (mapiter.getBlockKey() << 8) | laststep.ordinal();
+            Integer val = (Integer) cache.get(idx);
+            if (val != null) {
+                return val.intValue();
+            }
         }
             
         Context ctx = new Context(mapiter, blkid, blkdata, laststep, textid);
@@ -1021,8 +1091,9 @@ public class CTMTexturePack {
             }
         }
         // Add result to cache 
-        cache.put(idx, textid);
-        
+        if (cache != null) {
+            cache.put(idx, textid);
+        }
         return textid;
     }
     
@@ -1103,6 +1174,12 @@ public class CTMTexturePack {
             case VERTICAL:
                 return mapTextureVertical(p, ctx);
 
+            case HORIZONTAL_VERTICAL:
+                return mapTextureHorizontalVertical(p, ctx);
+
+            case VERTICAL_HORIZONTAL:
+                return mapTextureVerticalHorizontal(p, ctx);
+                
             case FIXED:
                 return mapTextureFixed(p, ctx);
 
@@ -1273,7 +1350,111 @@ public class CTMTexturePack {
         }
         return p.tileIcons[neighborMapVertical[neighborBits]];
     }
-    
+
+    // Map texture using h+v method
+    // Index into this array is formed from these bit values:
+    // 32  16  8
+    //     *
+    // 1   2   4
+    private static final int[] neighborMapHorizontalVertical = new int[]{
+        3, 3, 6, 3, 3, 3, 3, 3, 3, 3, 6, 3, 3, 3, 3, 3,
+        4, 4, 5, 4, 4, 4, 4, 4, 3, 3, 6, 3, 3, 3, 3, 3,
+        3, 3, 6, 3, 3, 3, 3, 3, 3, 3, 6, 3, 3, 3, 3, 3,
+        3, 3, 6, 3, 3, 3, 3, 3, 3, 3, 6, 3, 3, 3, 3, 3,
+    };
+    private int mapTextureHorizontalVertical(CTMProps p, Context ctx) {
+        // Do horizontal first : only fall through if no match
+        int face = ctx.face;
+        if (face < 0) {
+            face = NORTH_FACE;
+        } else if (ctx.reorient(face) <= TOP_FACE) {
+            return -1;
+        }
+        int[][] offsets = NEIGHBOR_OFFSET[face];
+        int neighborBits = 0;
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(0)])) {
+            neighborBits |= 1;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(4)])) {
+            neighborBits |= 2;
+        }
+        int idx = neighborMapHorizontal[neighborBits];
+        if (idx != 3) {
+            return p.tileIcons[idx];
+        }
+        // Now check diagonals and up down
+        neighborBits = 0;
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_DL)])) {
+            neighborBits |= 1;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_D)])) {
+            neighborBits |= 2;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_DR)])) {
+            neighborBits |= 4;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_UR)])) {
+            neighborBits |= 8;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_U)])) {
+            neighborBits |= 16;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_UL)])) {
+            neighborBits |= 32;
+        }
+        return p.tileIcons[neighborMapHorizontalVertical[neighborBits]];
+    }
+    // Index into this array is formed from these bit values:
+    // 32     16
+    // 1   *   8
+    // 2       4
+    private static final int[] neighborMapVerticalHorizontal = new int[]{
+        3, 6, 3, 3, 3, 6, 3, 3, 4, 5, 4, 4, 3, 6, 3, 3,
+        3, 6, 3, 3, 3, 6, 3, 3, 3, 6, 3, 3, 3, 6, 3, 3,
+        3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 3, 3, 3, 3,
+        3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    };
+    // Map texture using vertical+horizontal method
+    private int mapTextureVerticalHorizontal(CTMProps p, Context ctx) {
+        // Do vertical first : handle if any matches
+        if (ctx.reorient(ctx.face) <= TOP_FACE) {
+            return -1;
+        }
+        int[][] offsets = NEIGHBOR_OFFSET[ctx.face];
+        int neighborBits = 0;
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(2)])) {
+            neighborBits |= 1;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(6)])) {
+            neighborBits |= 2;
+        }
+        int idx = neighborMapVertical[neighborBits];
+        if (idx != 3) {
+            return p.tileIcons[idx];
+        }
+        // Else, check horizontal and diagonals
+        neighborBits = 0;
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_L)])) {
+            neighborBits |= 1;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_DL)])) {
+            neighborBits |= 2;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_DR)])) {
+            neighborBits |= 4;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_R)])) {
+            neighborBits |= 8;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_UR)])) {
+            neighborBits |= 16;
+        }
+        if (p.shouldConnect(ctx, offsets[ctx.rotateUV(REL_UL)])) {
+            neighborBits |= 32;
+        }
+        return p.tileIcons[neighborMapVerticalHorizontal[neighborBits]];
+    }
+
     // Map texture using fixed method
     private int mapTextureFixed(CTMProps p, Context ctx) {
         return p.tileIcons[0];

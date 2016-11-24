@@ -3,8 +3,7 @@ package org.dynmap.hdmap;
 import static org.dynmap.JSONUtils.s;
 
 import org.dynmap.DynmapWorld;
-import java.io.File;
-import java.io.IOException;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -22,17 +21,16 @@ import org.dynmap.MapTile;
 import org.dynmap.MapType;
 import org.dynmap.MapType.ImageFormat;
 import org.dynmap.MapTypeState;
-import org.dynmap.TileHashManager;
-import org.dynmap.debug.Debug;
 import org.dynmap.markers.impl.MarkerAPIImpl;
 import org.dynmap.renderer.RenderPatch;
 import org.dynmap.renderer.RenderPatchFactory.SideVisible;
+import org.dynmap.storage.MapStorage;
+import org.dynmap.storage.MapStorageTile;
 import org.dynmap.utils.BlockStep;
 import org.dynmap.hdmap.HDBlockModels.CustomBlockModel;
 import org.dynmap.hdmap.TexturePack.BlockTransparency;
 import org.dynmap.hdmap.TexturePack.HDTextureMap;
 import org.dynmap.utils.DynmapBufferedImage;
-import org.dynmap.utils.FileLockManager;
 import org.dynmap.utils.LightLevels;
 import org.dynmap.utils.DynLongHashMap;
 import org.dynmap.utils.MapChunkCache;
@@ -81,12 +79,6 @@ public class IsoHDPerspective implements HDPerspective {
     private boolean need_biomedata = false;
     private boolean need_rawbiomedata = false;
 
-    private static final int REDSTONE_BLKTYPEID = 55;
-    private static final int FENCEGATE_BLKTYPEID = 107;
-    
-    private enum ChestData {
-        SINGLE_WEST, SINGLE_SOUTH, SINGLE_EAST, SINGLE_NORTH, LEFT_WEST, LEFT_SOUTH, LEFT_EAST, LEFT_NORTH, RIGHT_WEST, RIGHT_SOUTH, RIGHT_EAST, RIGHT_NORTH
-    };
     private static final BlockStep [] semi_steps = { BlockStep.Y_PLUS, BlockStep.X_MINUS, BlockStep.X_PLUS, BlockStep.Z_MINUS, BlockStep.Z_PLUS };
 
     private class OurPerspectiveState implements HDPerspectiveState {
@@ -388,269 +380,6 @@ public class IsoHDPerspective implements HDPerspective {
             nonairhit = false;
             skiptoair = isnether;
         }
-        private int generateFenceBlockData(int blkid) {
-            int blockdata = 0;
-            int id;
-            /* Check north */
-            id = mapiter.getBlockTypeIDAt(BlockStep.X_MINUS);
-            if((id == blkid) || (id == FENCEGATE_BLKTYPEID) || 
-                    ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {    /* Fence? */
-                blockdata |= 1;
-            }
-            /* Look east */
-            id = mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS);
-            if((id == blkid) || (id == FENCEGATE_BLKTYPEID) ||
-                    ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {    /* Fence? */
-                blockdata |= 2;
-            }
-            /* Look south */
-            id = mapiter.getBlockTypeIDAt(BlockStep.X_PLUS);
-            if((id == blkid) || (id == FENCEGATE_BLKTYPEID) ||
-                    ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {    /* Fence? */
-                blockdata |= 4;
-            }
-            /* Look west */
-            id = mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS);
-            if((id == blkid) || (id == FENCEGATE_BLKTYPEID) ||
-                    ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {    /* Fence? */
-                blockdata |= 8;
-            }
-            return blockdata;
-        }
-        /**
-         * Generate chest block to drive model selection:
-         *   0 = single facing west
-         *   1 = single facing south
-         *   2 = single facing east
-         *   3 = single facing north
-         *   4 = left side facing west
-         *   5 = left side facing south
-         *   6 = left side facing east
-         *   7 = left side facing north
-         *   8 = right side facing west
-         *   9 = right side facing south
-         *   10 = right side facing east
-         *   11 = right side facing north
-         * @return
-         */
-        private int generateChestBlockData(int blktype) {
-            int blkdata = mapiter.getBlockData();   /* Get block data */
-            ChestData cd = ChestData.SINGLE_WEST;   /* Default to single facing west */
-            switch(blkdata) {   /* First, use orientation data */
-                case 2: /* East (now north) */
-                    if(mapiter.getBlockTypeIDAt(BlockStep.X_MINUS) == blktype) { /* Check north */
-                        cd = ChestData.LEFT_EAST;
-                    }
-                    else if(mapiter.getBlockTypeIDAt(BlockStep.X_PLUS) == blktype) {    /* Check south */
-                        cd = ChestData.RIGHT_EAST;
-                    }
-                    else {
-                        cd = ChestData.SINGLE_EAST;
-                    }
-                    break;
-                case 4: /* North */
-                    if(mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS) == blktype) { /* Check east */
-                        cd = ChestData.RIGHT_NORTH;
-                    }
-                    else if(mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS) == blktype) {    /* Check west */
-                        cd = ChestData.LEFT_NORTH;
-                    }
-                    else {
-                        cd = ChestData.SINGLE_NORTH;
-                    }
-                    break;
-                case 5: /* South */
-                    if(mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS) == blktype) { /* Check east */
-                        cd = ChestData.LEFT_SOUTH;
-                    }
-                    else if(mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS) == blktype) {    /* Check west */
-                        cd = ChestData.RIGHT_SOUTH;
-                    }
-                    else {
-                        cd = ChestData.SINGLE_SOUTH;
-                    }
-                    break;
-                case 3: /* West */
-                default:
-                    if(mapiter.getBlockTypeIDAt(BlockStep.X_MINUS) == blktype) { /* Check north */
-                        cd = ChestData.RIGHT_WEST;
-                    }
-                    else if(mapiter.getBlockTypeIDAt(BlockStep.X_PLUS) == blktype) {    /* Check south */
-                        cd = ChestData.LEFT_WEST;
-                    }
-                    else {
-                        cd = ChestData.SINGLE_WEST;
-                    }
-                    break;
-            }
-            return cd.ordinal();
-        }
-        /**
-         * Generate redstone wire model data:
-         *   0 = NSEW wire
-         *   1 = NS wire
-         *   2 = EW wire
-         *   3 = NE wire
-         *   4 = NW wire
-         *   5 = SE wire
-         *   6 = SW wire
-         *   7 = NSE wire
-         *   8 = NSW wire
-         *   9 = NEW wire
-         *   10 = SEW wire
-         *   11 = none
-         * @return
-         */
-        private int generateRedstoneWireBlockData() {
-            /* Check adjacent block IDs */
-            int ids[] = { mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS),  /* To west */
-                mapiter.getBlockTypeIDAt(BlockStep.X_PLUS),            /* To south */
-                mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS),           /* To east */
-                mapiter.getBlockTypeIDAt(BlockStep.X_MINUS) };         /* To north */
-            int flags = 0;
-            for(int i = 0; i < 4; i++)
-                if(ids[i] == REDSTONE_BLKTYPEID)
-                    flags |= (1<<i);
-            switch(flags) {
-                case 0: /* Nothing nearby */
-                    return 11;
-                case 15: /* NSEW */
-                    return 0;   /* NSEW graphic */
-                case 2: /* S */
-                case 8: /* N */
-                case 10: /* NS */
-                    return 1;   /* NS graphic */
-                case 1: /* W */
-                case 4: /* E */
-                case 5: /* EW */
-                    return 2;   /* EW graphic */
-                case 12: /* NE */
-                    return 3;
-                case 9: /* NW */
-                    return 4;
-                case 6: /* SE */
-                    return 5;
-                case 3: /* SW */
-                    return 6;
-                case 14: /* NSE */
-                    return 7;
-                case 11: /* NSW */
-                    return 8;
-                case 13: /* NEW */
-                    return 9;
-                case 7: /* SEW */
-                    return 10;
-            }
-            return 0;
-        }
-        /**
-         * Generate block render data for glass pane and iron fence.
-         *  - bit 0 = X-minus axis
-         *  - bit 1 = Z-minus axis
-         *  - bit 2 = X-plus axis
-         *  - bit 3 = Z-plus axis
-         *  
-         * @param typeid - ID of our material (test is for adjacent material OR nontransparent)
-         * @return
-         */
-        private int generateIronFenceGlassBlockData(int typeid) {
-            int blockdata = 0;
-            int id;
-            /* Check north */
-            id = mapiter.getBlockTypeIDAt(BlockStep.X_MINUS);
-            if((id == typeid) || ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {
-                blockdata |= 1;
-            }
-            /* Look east */
-            id = mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS);
-            if((id == typeid) || ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {
-                blockdata |= 2;
-            }
-            /* Look south */
-            id = mapiter.getBlockTypeIDAt(BlockStep.X_PLUS);
-            if((id == typeid) || ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {
-                blockdata |= 4;
-            }
-            /* Look west */
-            id = mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS);
-            if((id == typeid) || ((id > 0) && (HDTextureMap.getTransparency(id) == BlockTransparency.OPAQUE))) {
-                blockdata |= 8;
-            }
-            return blockdata;
-        }
-        /**
-         * Generate render data for doors
-         *  - bit 3 = top half (1) or bottom half (0)
-         *  - bit 2 = right hinge (0), left hinge (1)
-         *  - bit 1,0 = 00=west,01=north,10=east,11=south
-         * @param typeid - ID of our material
-         * @return
-         */
-        private int generateDoorBlockData(int typeid) {
-            int blockdata = 0;
-            int topdata = mapiter.getBlockData();   /* Get block data */
-            int bottomdata = 0;
-            if((topdata & 0x08) != 0) { /* We're door top */
-                blockdata |= 0x08;  /* Set top bit */
-                mapiter.stepPosition(BlockStep.Y_MINUS);
-                bottomdata = mapiter.getBlockData();
-                mapiter.unstepPosition(BlockStep.Y_MINUS);
-            }
-            else {  /* Else, we're bottom */
-                bottomdata = topdata;
-                mapiter.stepPosition(BlockStep.Y_PLUS);
-                topdata = mapiter.getBlockData();
-                mapiter.unstepPosition(BlockStep.Y_PLUS);
-            }
-            boolean onright = false;
-            if((topdata & 0x01) == 1) { /* Right hinge */
-                blockdata |= 0x4; /* Set hinge bit */
-                onright = true;
-            }
-            blockdata |= (bottomdata & 0x3);    /* Set side bits */
-            /* If open, rotate data appropriately */
-            if((bottomdata & 0x4) > 0) {
-                if(onright) {   /* Hinge on right? */
-                    blockdata = (blockdata & 0x8) | 0x0 | ((blockdata-1) & 0x3);
-                }
-                else {
-                    blockdata = (blockdata & 0x8) | 0x4 | ((blockdata+1) & 0x3);
-                }
-            }
-            return blockdata;
-        }
-
-        private final boolean containsID(int id, int[] linkids) {
-            for(int i = 0; i < linkids.length; i++)
-                if(id == linkids[i])
-                    return true;
-            return false;
-        }
-        private int generateWireBlockData(int[] linkids) {
-            int blockdata = 0;
-            int id;
-            /* Check north */
-            id = mapiter.getBlockTypeIDAt(BlockStep.X_MINUS);
-            if(containsID(id, linkids)) {
-                blockdata |= 1;
-            }
-            /* Look east */
-            id = mapiter.getBlockTypeIDAt(BlockStep.Z_MINUS);
-            if(containsID(id, linkids)) {
-                blockdata |= 2;
-            }
-            /* Look south */
-            id = mapiter.getBlockTypeIDAt(BlockStep.X_PLUS);
-            if(containsID(id, linkids)) {
-                blockdata |= 4;
-            }
-            /* Look west */
-            id = mapiter.getBlockTypeIDAt(BlockStep.Z_PLUS);
-            if(containsID(id, linkids)) {
-                blockdata |= 8;
-            }
-            return blockdata;
-        }
 
         private final boolean handleSubModel(short[] model, HDShaderState[] shaderstate, boolean[] shaderdone) {
             boolean firststep = true;
@@ -782,12 +511,6 @@ public class IsoHDPerspective implements HDPerspective {
             return false;
         }
         
-        private static final int FENCE_ALGORITHM = 1;
-        private static final int CHEST_ALGORITHM = 2;
-        private static final int REDSTONE_ALGORITHM = 3;
-        private static final int GLASS_IRONFENCE_ALG = 4;
-        private static final int WIRE_ALGORITHM = 5;
-        private static final int DOOR_ALGORITHM = 6;
         /**
          * Process visit of ray to block
          */
@@ -800,31 +523,9 @@ public class IsoHDPerspective implements HDPerspective {
                 }
             }
             else if(nonairhit || (blocktypeid != 0)) {
-                blockdata = mapiter.getBlockData();            	
-                switch(HDBlockModels.getLinkAlgID(blocktypeid)) {
-                    case FENCE_ALGORITHM:   /* Fence algorithm */
-                        blockrenderdata = generateFenceBlockData(blocktypeid);
-                        break;
-                    case CHEST_ALGORITHM:
-                        blockrenderdata = generateChestBlockData(blocktypeid);
-                        break;
-                    case REDSTONE_ALGORITHM:
-                        blockrenderdata = generateRedstoneWireBlockData();
-                        break;
-                    case GLASS_IRONFENCE_ALG:
-                        blockrenderdata = generateIronFenceGlassBlockData(blocktypeid);
-                        break;
-                    case WIRE_ALGORITHM:
-                        blockrenderdata = generateWireBlockData(HDBlockModels.getLinkIDs(blocktypeid));
-                        break;
-                    case DOOR_ALGORITHM:
-                        blockrenderdata = generateDoorBlockData(blocktypeid);
-                        break;
-                    case 0:
-                    default:
-                    	blockrenderdata = -1;
-                    	break;
-                }
+                blockdata = mapiter.getBlockData();  
+                blockrenderdata = HDBlockModels.getBlockRenderData(blocktypeid, mapiter);
+                
                 RenderPatch[] patches = scalemodels.getPatchModel(blocktypeid,  blockdata,  blockrenderdata);
                 /* If no patches, see if custom model */
                 if(patches == null) {
@@ -1265,7 +966,7 @@ public class IsoHDPerspective implements HDPerspective {
         }
         /* Now, add the tiles for the ranges - not perfect, but it works (some extra tiles on corners possible) */
         for(int i = mintilex; i <= maxtilex; i++) {
-            for(int j = mintiley-1; j <= maxtiley; j++) {   /* Extra 1 - TODO: figure out why needed... */ 
+            for(int j = mintiley-1; j <= maxtiley; j++) {
                 tiles.add(new TileFlags.TileCoord(i, j));
             }
         }
@@ -1354,18 +1055,12 @@ public class IsoHDPerspective implements HDPerspective {
         /* Now, need to walk through the min/max range to see which chunks are actually needed */
         ArrayList<DynmapChunk> chunks = new ArrayList<DynmapChunk>();
         
-        //Log.info("============================");
-        int cnt1 = 0, cnt2 = 0;
         for(int x = min_chunk_x; x <= max_chunk_x; x++) {
-            //String xs = "";
             for(int z = min_chunk_z; z <= max_chunk_z; z++) {
                 boolean hit = false;
-                //char c = '-';
                 for (int sidenum = 0; (!hit) && (sidenum < side.length); sidenum++) {
                     if (side[sidenum].clip(16.0*x, 16.0*z, 16.0*(x+1), 16.0*(z+1)) != null) {
                         hit = true;
-                        //c = (char)('0' + sidenum);
-                        cnt1++;
                     }
                 }
                 //xs += c;
@@ -1373,11 +1068,8 @@ public class IsoHDPerspective implements HDPerspective {
                     DynmapChunk chunk = new DynmapChunk(x, z);
                     chunks.add(chunk);
                 }
-                cnt2++;
             }
-            //Log.info(xs);
         }
-        //Log.info("============================");
         return chunks;
     }
 
@@ -1497,93 +1189,66 @@ public class IsoHDPerspective implements HDPerspective {
 
         boolean renderone = false;
         /* Test to see if we're unchanged from older tile */
-        TileHashManager hashman = MapManager.mapman.hashman;
+        MapStorage storage = world.getMapStorage();
         for(int i = 0; i < numshaders; i++) {
-            long crc = hashman.calculateTileHash(argb_buf[i]);
+            long crc = MapStorage.calculateImageHashCode(argb_buf[i], 0, argb_buf[i].length);
             boolean tile_update = false;
             String prefix = shaderstate[i].getMap().getPrefix();
 
-            MapType.ImageFormat fmt = shaderstate[i].getMap().getImageFormat();
-            String fname = tile.getFilename(prefix, fmt);
-            File f = new File(tile.getDynmapWorld().worldtilepath, fname);
-            FileLockManager.getWriteLock(f);
+            MapStorageTile mtile = storage.getTile(world, shaderstate[i].getMap(), tile.tx, tile.ty, 0, MapType.ImageVariant.STANDARD);
+
+            mtile.getWriteLock();
             try {
-                if((!f.exists()) || (crc != hashman.getImageHashCode(tile.getKey(prefix), null, tile.tx, tile.ty))) {
+                if(mtile.matchesHashCode(crc) == false) {
                     /* Wrap buffer as buffered image */
                     if(rendered[i]) {   
-                        Debug.debug("saving image " + f.getPath());
-                        if(!f.getParentFile().exists())
-                            f.getParentFile().mkdirs();
-                        try {
-                            FileLockManager.imageIOWrite(im[i].buf_img, fmt, f);
-                        } catch (IOException e) {
-                            Debug.error("Failed to save image: " + f.getPath(), e);
-                        } catch (java.lang.NullPointerException e) {
-                            Debug.error("Failed to save image (NullPointerException): " + f.getPath(), e);
-                        }
+                        mtile.write(crc, im[i].buf_img);
                     }
                     else {
-                        f.delete();
+                        mtile.delete();
                     }
-                    MapManager.mapman.pushUpdate(tile.getDynmapWorld(), new Client.Tile(fname));
-                    hashman.updateHashCode(tile.getKey(prefix), null, tile.tx, tile.ty, crc);
-                    tile.getDynmapWorld().enqueueZoomOutUpdate(f);
+                    MapManager.mapman.pushUpdate(tile.getDynmapWorld(), new Client.Tile(mtile.getURI()));
                     tile_update = true;
                     renderone = true;
                 }
                 else {
-                    Debug.debug("skipping image " + f.getPath() + " - hash match");
                     if(!rendered[i]) {   
-                        f.delete();
-                        hashman.updateHashCode(tile.getKey(prefix), null, tile.tx, tile.ty, -1);
-                        tile.getDynmapWorld().enqueueZoomOutUpdate(f);
+                        mtile.delete();
                     }
                 }
             } finally {
-                FileLockManager.releaseWriteLock(f);
+                mtile.releaseWriteLock();
                 DynmapBufferedImage.freeBufferedImage(im[i]);
             }
             MapManager.mapman.updateStatistics(tile, prefix, true, tile_update, !rendered[i]);
             /* Handle day image, if needed */
             if(dayim[i] != null) {
-                fname = tile.getDayFilename(prefix, fmt);
-                f = new File(tile.getDynmapWorld().worldtilepath, fname);
-                FileLockManager.getWriteLock(f);
+                crc = MapStorage.calculateImageHashCode(day_argb_buf[i], 0, day_argb_buf[i].length);
+
+                mtile = storage.getTile(world, shaderstate[i].getMap(), tile.tx, tile.ty, 0, MapType.ImageVariant.DAY);
+
+                mtile.getWriteLock();
                 tile_update = false;
                 try {
-                    if((!f.exists()) || (crc != hashman.getImageHashCode(tile.getKey(prefix), "day", tile.tx, tile.ty))) {
+                    if(mtile.matchesHashCode(crc) == false) {
                         /* Wrap buffer as buffered image */
                         if(rendered[i]) {
-                            Debug.debug("saving image " + f.getPath());
-                            if(!f.getParentFile().exists())
-                                f.getParentFile().mkdirs();
-                            try {
-                                FileLockManager.imageIOWrite(dayim[i].buf_img, fmt, f);
-                            } catch (IOException e) {
-                                Debug.error("Failed to save image: " + f.getPath(), e);
-                            } catch (java.lang.NullPointerException e) {
-                                Debug.error("Failed to save image (NullPointerException): " + f.getPath(), e);
-                            }
+                            mtile.write(crc, dayim[i].buf_img);
                         }
                         else {
-                            f.delete();
+                            mtile.delete();
                         }
-                        MapManager.mapman.pushUpdate(tile.getDynmapWorld(), new Client.Tile(fname));
-                        hashman.updateHashCode(tile.getKey(prefix), "day", tile.tx, tile.ty, crc);
-                        tile.getDynmapWorld().enqueueZoomOutUpdate(f);
+                        MapManager.mapman.pushUpdate(tile.getDynmapWorld(), new Client.Tile(mtile.getURI()));
                         tile_update = true;
                         renderone = true;
                     }
                     else {
-                        Debug.debug("skipping image " + f.getPath() + " - hash match");
                         if(!rendered[i]) {   
-                            hashman.updateHashCode(tile.getKey(prefix), "day", tile.tx, tile.ty, -1);
-                            tile.getDynmapWorld().enqueueZoomOutUpdate(f);
-                            f.delete();
+                            mtile.delete();
                         }
                     }
                 } finally {
-                    FileLockManager.releaseWriteLock(f);
+                    mtile.releaseWriteLock();
                     DynmapBufferedImage.freeBufferedImage(dayim[i]);
                 }
                 MapManager.mapman.updateStatistics(tile, prefix+"_day", true, tile_update, !rendered[i]);

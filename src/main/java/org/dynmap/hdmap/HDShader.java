@@ -1,8 +1,12 @@
 package org.dynmap.hdmap;
 
+import java.io.IOException;
+
+import org.dynmap.common.DynmapCommandSender;
+import org.dynmap.exporter.OBJExport;
+import org.dynmap.utils.BlockStep;
 import org.dynmap.utils.MapChunkCache;
 import org.dynmap.utils.MapIterator;
-
 import org.json.simple.JSONObject;
 
 public interface HDShader {
@@ -13,7 +17,7 @@ public interface HDShader {
      * @param map - map being rendered
      * @param cache - chunk cache containing data for tile to be rendered
      * @param mapiter - iterator used when traversing rays in tile
-     * @param scale 
+     * @param scale - scale
      * @return state object to use for all rays in tile
      */
     HDShaderState getStateInstance(HDMap map, MapChunkCache cache, MapIterator mapiter, int scale);
@@ -31,5 +35,8 @@ public interface HDShader {
     boolean isEmittedLightLevelNeeded();
     /* Add shader's contributions to JSON for map object */
     void addClientConfiguration(JSONObject mapObject);
-
+    /* Export shader as material library */
+    void exportAsMaterialLibrary(DynmapCommandSender sender, OBJExport exp) throws IOException;
+    /* Get materials for each patch on the current block (with +N for N*90 degree rotations) */
+    String[] getCurrentBlockMaterials(int blkid, int blkdata, int renderdata, MapIterator mapiter, int[] txtidx, BlockStep[] steps);
 }
